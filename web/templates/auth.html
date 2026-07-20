@@ -1,0 +1,279 @@
+{% extends "base.html" %}
+{% block title %}Authentication{% endblock %}
+{% block page_title %}Authentication & Users{% endblock %}
+{% set active = "auth" %}
+
+{% block content %}
+
+<!-- User Management -->
+<div class="card" style="margin-bottom:16px">
+  <div class="card-header">
+    <div>
+      <div class="card-title">User Accounts</div>
+      <div class="card-sub">{{ users|length }} user(s) configured</div>
+    </div>
+    <button class="btn btn-primary" onclick="openModal('add-user-modal')">+ Add User</button>
+  </div>
+
+  <div class="toolbar">
+    <input id="search-input" class="form-control" style="max-width:260px" placeholder="Search users...">
+  </div>
+
+  <div class="table-wrap">
+    <table id="main-table">
+      <thead>
+        <tr>
+          <th>Username</th><th>Full Name</th><th>Email</th><th>Role</th><th>Group</th><th>MFA</th><th>Status</th><th>Last Login</th><th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr id="user-row-{{ u.id }}">
+          <td class="font-mono">{{ u.username }}</td>
+          <td>{{ u.full_name or '—' }}</td>
+          <td class="text-muted">{{ u.email or '—' }}</td>
+          <td>
+            {% if u.role == 'admin' %}
+            <span class="badge badge-block">admin</span>
+            {% elif u.role == 'user' %}
+            <span class="badge badge-info">user</span>
+            {% elif u.role == 'readonly' %}
+            <span class="badge badge-disabled">readonly</span>
+            {% elif u.role == 'vpn-only' %}
+            <span class="badge badge-warn">vpn-only</span>
+            {% else %}
+            <span class="badge badge-info">{{ u.role }}</span>
+            {% endif %}
+          </td>
+          <td class="text-muted">{{ u.group or '—' }}</td>
+          <td>
+            {% if u.mfa_enabled %}
+            <span class="badge badge-allow">Enabled</span>
+            {% else %}
+            <span class="badge badge-disabled">Disabled</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if u.enabled %}
+            <span class="badge badge-allow">Active</span>
+            {% else %}
+            <span class="badge badge-block">Disabled</span>
+            {% endif %}
+          </td>
+          <td class="text-muted">{{ u.last_login or 'Never' }}</td>
+          <td>
+            <div class="btn-group">
+              {% if not u.mfa_enabled %}
+              <button class="btn btn-secondary btn-sm" onclick="enableMFA({{ u.id }}, '{{ u.username }}')">Enable MFA</button>
+              {% else %}
+              <button class="btn btn-warning btn-sm" onclick="disableMFA({{ u.id }}, '{{ u.username }}')">Disable MFA</button>
+              {% endif %}
+              <button class="btn btn-secondary btn-sm" onclick="toggleUser({{ u.id }}, {{ u.enabled }})">
+                {{ 'Disable' if u.enabled else 'Enable' }}
+              </button>
+              <button class="btn btn-danger btn-sm" onclick="deleteUser({{ u.id }}, '{{ u.username }}')">✕</button>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="9" class="text-muted" style="text-align:center;padding:30px">No users configured.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- MFA QR Section (shown dynamically) -->
+<div id="mfa-qr-section" style="display:none">
+  <div class="card" style="border-color:var(--success)">
+    <div class="card-header">
+      <div>
+        <div class="card-title" style="color:var(--success)">MFA Setup — Scan QR Code</div>
+        <div class="card-sub">Use Google Authenticator or Authy to scan the code</div>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="closeMFASetup()">Close</button>
+    </div>
+    <div class="alert alert-info" style="margin-bottom:16px">
+      MFA has been enabled for <strong id="mfa-username-display"></strong>. Follow the steps below to complete setup.
+    </div>
+    <div class="grid grid-2">
+      <div>
+        <div class="form-label" style="margin-bottom:8px">1. Install an authenticator app</div>
+        <div class="text-muted" style="margin-bottom:16px">Download <strong>Google Authenticator</strong> or <strong>Authy</strong> from the App Store / Google Play.</div>
+        <div class="form-label" style="margin-bottom:8px">2. Scan the QR code or enter the setup key manually</div>
+        <div class="form-group">
+          <label class="form-label">OTP URI (copy to authenticator app)</label>
+          <textarea class="form-control font-mono" id="mfa-uri-display" rows="4" readonly style="font-size:11px;word-break:break-all"></textarea>
+          <button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="copyText(document.getElementById('mfa-uri-display').value)">Copy URI</button>
+        </div>
+        <div class="form-label" style="margin-bottom:8px">3. Enter verification code to confirm</div>
+        <div class="form-inline">
+          <input class="form-control font-mono" id="mfa-verify-code" placeholder="6-digit code" maxlength="6" style="width:160px;letter-spacing:4px;text-align:center;font-size:18px">
+          <button class="btn btn-success" onclick="verifyMFA()">Verify &amp; Activate</button>
+        </div>
+      </div>
+      <div style="text-align:center;padding:20px">
+        <div id="mfa-qr-canvas" style="background:#fff;padding:12px;display:inline-block;border-radius:6px;min-width:160px;min-height:160px">
+          <div class="text-muted" style="padding:40px 20px;font-size:11px">QR code will appear here after MFA activation.<br><br>Use the URI text to manually add to your authenticator app.</div>
+        </div>
+        <div class="text-muted" style="margin-top:8px;font-size:11px">Scan with Google Authenticator</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Add User Modal -->
+<div class="modal-overlay" id="add-user-modal">
+  <div class="modal" style="width:560px">
+    <div class="modal-header">
+      <span class="modal-title">Add New User</span>
+      <button class="modal-close" onclick="closeModal('add-user-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Username *</label>
+          <input class="form-control font-mono" id="new-username" placeholder="e.g. jsmith" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Password *</label>
+          <input class="form-control" id="new-password" type="password" placeholder="Strong password" autocomplete="new-password">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Full Name</label>
+          <input class="form-control" id="new-fullname" placeholder="e.g. John Smith">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Email Address</label>
+          <input class="form-control" id="new-email" type="email" placeholder="e.g. jsmith@company.com">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Role</label>
+          <select class="form-control" id="new-role">
+            <option value="admin">admin — Full access</option>
+            <option value="user" selected>user — Standard access</option>
+            <option value="readonly">readonly — View only</option>
+            <option value="vpn-only">vpn-only — VPN access only</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Group</label>
+          <input class="form-control" id="new-group" list="groups-list" placeholder="Optional group name">
+          <datalist id="groups-list">
+            {% for g in groups | default([]) %}
+            <option value="{{ g }}">
+            {% endfor %}
+          </datalist>
+        </div>
+      </div>
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="new-enabled" checked> Account Active
+        </label>
+      </div>
+      <div class="alert alert-info" style="font-size:11px">
+        Password must be at least 8 characters. Admin users have full access to all system settings and policies.
+        VPN-only users can only manage their VPN connection.
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('add-user-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveUser()">Create User</button>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let mfaUserId = null;
+
+async function saveUser() {
+  const username = document.getElementById('new-username').value.trim();
+  const password = document.getElementById('new-password').value;
+  if (!username) { toast('Username is required', 'error'); return; }
+  if (!password || password.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
+  const data = {
+    username,
+    password,
+    full_name: document.getElementById('new-fullname').value.trim(),
+    email: document.getElementById('new-email').value.trim(),
+    role: document.getElementById('new-role').value,
+    group: document.getElementById('new-group').value.trim(),
+    enabled: document.getElementById('new-enabled').checked ? 1 : 0,
+  };
+  try {
+    await POST('/api/auth/users', data);
+    toast('User created successfully', 'success');
+    closeModal('add-user-modal');
+    setTimeout(() => location.reload(), 600);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function deleteUser(id, username) {
+  if (!confirm2(`Delete user "${username}"? This cannot be undone.`)) return;
+  try {
+    await DELETE(`/api/auth/users/${id}`);
+    document.getElementById(`user-row-${id}`)?.remove();
+    toast(`User "${username}" deleted`, 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function toggleUser(id, enabled) {
+  try {
+    await POST(`/api/auth/users/${id}/toggle`);
+    toast(enabled ? 'User account disabled' : 'User account enabled', 'success');
+    setTimeout(() => location.reload(), 400);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function enableMFA(id, username) {
+  try {
+    const r = await POST(`/api/auth/users/${id}/mfa/enable`);
+    mfaUserId = id;
+    document.getElementById('mfa-username-display').textContent = username;
+    document.getElementById('mfa-uri-display').value = r.otp_uri || ('otpauth://totp/FGUARD UTC:' + username + '?secret=' + (r.secret || 'UNKNOWN') + '&issuer=FGUARD UTC');
+    document.getElementById('mfa-qr-section').style.display = '';
+    document.getElementById('mfa-qr-section').scrollIntoView({ behavior: 'smooth' });
+    toast('MFA enabled — scan the QR code to activate', 'info');
+  } catch (e) { toast('Error enabling MFA: ' + e.message, 'error'); }
+}
+
+async function disableMFA(id, username) {
+  if (!confirm2(`Disable MFA for "${username}"? This reduces account security.`)) return;
+  try {
+    await POST(`/api/auth/users/${id}/mfa/disable`);
+    toast(`MFA disabled for "${username}"`, 'success');
+    setTimeout(() => location.reload(), 600);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function verifyMFA() {
+  const code = document.getElementById('mfa-verify-code').value.trim();
+  if (!code || code.length !== 6 || !/^\d+$/.test(code)) {
+    toast('Enter a valid 6-digit verification code', 'error'); return;
+  }
+  try {
+    await POST(`/api/auth/users/${mfaUserId}/mfa/verify`, { code });
+    toast('MFA verified and activated successfully!', 'success');
+    closeMFASetup();
+    setTimeout(() => location.reload(), 800);
+  } catch (e) { toast('Verification failed: ' + e.message, 'error'); }
+}
+
+function closeMFASetup() {
+  document.getElementById('mfa-qr-section').style.display = 'none';
+  document.getElementById('mfa-verify-code').value = '';
+  mfaUserId = null;
+}
+
+document.getElementById('add-user-modal').addEventListener('click', e => {
+  if (e.target === document.getElementById('add-user-modal')) closeModal('add-user-modal');
+});
+</script>
+{% endblock %}

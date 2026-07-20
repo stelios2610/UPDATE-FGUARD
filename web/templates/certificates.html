@@ -1,0 +1,374 @@
+{% extends "base.html" %}
+{% block title %}Certificates{% endblock %}
+{% block page_title %}Certificate Manager{% endblock %}
+{% set active = "certificates" %}
+
+{% block content %}
+
+<div class="card">
+  <div class="card-header">
+    <div>
+      <div class="card-title">Certificates</div>
+      <div class="card-sub">{{ certs|length }} certificate(s) in store</div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="openModal('gen-cert-modal')">Generate Self-Signed</button>
+      <button class="btn btn-secondary" onclick="openModal('import-cert-modal')">Import Certificate</button>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <input id="search-input" class="form-control" style="max-width:280px" placeholder="Search certificates...">
+  </div>
+
+  <div class="table-wrap">
+    <table id="main-table">
+      <thead>
+        <tr>
+          <th>Name</th><th>Type</th><th>Subject / CN</th><th>Not Before</th><th>Not After</th><th>Fingerprint</th><th>Usage</th><th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for cert in certs %}
+        <tr id="cert-row-{{ cert.id }}">
+          <td>{{ cert.name }}</td>
+          <td>
+            {% if cert.cert_type == 'self-signed' %}
+            <span class="badge badge-warn">Self-Signed</span>
+            {% elif cert.cert_type == 'ca' %}
+            <span class="badge badge-info">CA</span>
+            {% elif cert.cert_type == 'imported' %}
+            <span class="badge badge-allow">Imported</span>
+            {% else %}
+            <span class="badge badge-disabled">{{ cert.cert_type or 'Unknown' }}</span>
+            {% endif %}
+          </td>
+          <td class="font-mono" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ cert.subject }}">
+            {{ cert.subject or cert.cn or '—' }}
+          </td>
+          <td class="font-mono text-muted">{{ cert.not_before or '—' }}</td>
+          <td class="font-mono">
+            {% if cert.not_after %}
+              {% set days_left = cert.days_remaining | default(999) %}
+              {% if days_left < 30 %}
+              <span style="color:var(--danger)">{{ cert.not_after }} <span class="badge badge-block">Expiring Soon</span></span>
+              {% elif days_left < 90 %}
+              <span style="color:var(--warning)">{{ cert.not_after }} <span class="badge badge-warn">{{ days_left }}d</span></span>
+              {% else %}
+              {{ cert.not_after }}
+              {% endif %}
+            {% else %}
+            —
+            {% endif %}
+          </td>
+          <td class="font-mono text-muted" style="font-size:10px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ cert.fingerprint }}">
+            {{ cert.fingerprint or '—' }}
+          </td>
+          <td>
+            {% for u in (cert.usage or 'General').split(',') %}
+            <span class="badge badge-info" style="font-size:10px;margin-right:2px">{{ u.strip() }}</span>
+            {% endfor %}
+          </td>
+          <td>
+            <div class="btn-group">
+              <button class="btn btn-secondary btn-sm" onclick="viewCert({{ cert|tojson }})">View</button>
+              <button class="btn btn-secondary btn-sm" onclick="downloadCert({{ cert.id }})">Export</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteCert({{ cert.id }}, '{{ cert.name }}')">✕</button>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="8" class="text-muted" style="text-align:center;padding:30px">
+            No certificates in store. Generate a self-signed certificate or import an existing one.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Certificate Detail Modal (view) -->
+<div class="modal-overlay" id="view-cert-modal">
+  <div class="modal" style="width:680px">
+    <div class="modal-header">
+      <span class="modal-title" id="view-cert-title">Certificate Details</span>
+      <button class="modal-close" onclick="closeModal('view-cert-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="grid grid-2">
+        <div>
+          <div class="form-group">
+            <label class="form-label">Subject</label>
+            <div class="font-mono" id="view-subject" style="font-size:12px;color:var(--text-primary)"></div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Issuer</label>
+            <div class="font-mono" id="view-issuer" style="font-size:12px;color:var(--text-muted)"></div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Valid From</label>
+            <div class="font-mono" id="view-not-before"></div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Valid To</label>
+            <div class="font-mono" id="view-not-after"></div>
+          </div>
+        </div>
+        <div>
+          <div class="form-group">
+            <label class="form-label">Fingerprint (SHA-256)</label>
+            <div class="font-mono" id="view-fingerprint" style="font-size:10px;word-break:break-all;color:var(--text-muted)"></div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Serial Number</label>
+            <div class="font-mono" id="view-serial" style="font-size:11px;color:var(--text-muted)"></div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Key Algorithm</label>
+            <div class="font-mono" id="view-algorithm"></div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Usage</label>
+            <div id="view-usage"></div>
+          </div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">PEM Certificate</label>
+        <textarea class="form-control font-mono" id="view-pem" rows="8" readonly style="font-size:10px"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="copyText(document.getElementById('view-pem').value)">Copy PEM</button>
+      <button class="btn btn-secondary" onclick="closeModal('view-cert-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Generate Self-Signed Modal -->
+<div class="modal-overlay" id="gen-cert-modal">
+  <div class="modal" style="width:580px">
+    <div class="modal-header">
+      <span class="modal-title">Generate Self-Signed Certificate</span>
+      <button class="modal-close" onclick="closeModal('gen-cert-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Certificate Name *</label>
+        <input class="form-control" id="gen-name" placeholder="e.g. FGUARD UTC Web UI">
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Common Name (CN) *</label>
+          <input class="form-control font-mono" id="gen-cn" placeholder="e.g. aegisguard.local or 192.168.1.1">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Validity (days)</label>
+          <input class="form-control" id="gen-days" type="number" value="365" min="1" max="3650">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Organization (O)</label>
+          <input class="form-control" id="gen-org" placeholder="e.g. My Organization">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Country (C)</label>
+          <input class="form-control" id="gen-country" placeholder="e.g. US" maxlength="2" style="text-transform:uppercase">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">State / Province (ST)</label>
+          <input class="form-control" id="gen-state" placeholder="e.g. California">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Locality (L)</label>
+          <input class="form-control" id="gen-locality" placeholder="e.g. San Francisco">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Key Size (bits)</label>
+          <select class="form-control" id="gen-keysize">
+            <option value="2048" selected>2048 (Standard)</option>
+            <option value="4096">4096 (Strong)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Usage</label>
+          <select class="form-control" id="gen-usage">
+            <option value="Web UI">Web UI (TLS)</option>
+            <option value="VPN">VPN</option>
+            <option value="General">General Purpose</option>
+            <option value="CA">Certificate Authority</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Subject Alternative Names (SANs)</label>
+        <input class="form-control font-mono" id="gen-sans" placeholder="e.g. DNS:aegis.local,IP:192.168.1.1 (comma-separated)">
+      </div>
+      <div class="alert alert-info" style="font-size:11px">
+        Self-signed certificates will generate browser warnings. For production use, import a certificate signed by a trusted Certificate Authority.
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('gen-cert-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="generateCert()">Generate Certificate</button>
+    </div>
+  </div>
+</div>
+
+<!-- Import Certificate Modal -->
+<div class="modal-overlay" id="import-cert-modal">
+  <div class="modal" style="width:640px">
+    <div class="modal-header">
+      <span class="modal-title">Import Certificate</span>
+      <button class="modal-close" onclick="closeModal('import-cert-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Certificate Name *</label>
+          <input class="form-control" id="import-name" placeholder="e.g. My CA Cert">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Usage</label>
+          <select class="form-control" id="import-usage">
+            <option value="Web UI">Web UI (TLS)</option>
+            <option value="VPN">VPN</option>
+            <option value="CA">Certificate Authority</option>
+            <option value="General">General Purpose</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Certificate (PEM) *</label>
+        <textarea class="form-control font-mono" id="import-cert-pem" rows="8"
+                  placeholder="-----BEGIN CERTIFICATE-----&#10;...base64 encoded certificate...&#10;-----END CERTIFICATE-----"
+                  style="font-size:11px"></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Private Key (PEM) — optional for CA/public certificates</label>
+        <textarea class="form-control font-mono" id="import-key-pem" rows="6"
+                  placeholder="-----BEGIN PRIVATE KEY-----&#10;...base64 encoded private key...&#10;-----END PRIVATE KEY-----"
+                  style="font-size:11px"></textarea>
+        <small class="text-muted">Private key is stored encrypted. Leave blank if importing a CA/public certificate only.</small>
+      </div>
+      <div class="form-group">
+        <label class="form-label">CA Chain (PEM) — optional</label>
+        <textarea class="form-control font-mono" id="import-chain-pem" rows="4"
+                  placeholder="Paste intermediate/CA certificates here if needed"
+                  style="font-size:11px"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('import-cert-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="importCert()">Import Certificate</button>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+async function generateCert() {
+  const name = document.getElementById('gen-name').value.trim();
+  const cn = document.getElementById('gen-cn').value.trim();
+  const days = parseInt(document.getElementById('gen-days').value) || 365;
+  if (!name) { toast('Certificate name is required', 'error'); return; }
+  if (!cn) { toast('Common Name (CN) is required', 'error'); return; }
+  const data = {
+    name, cn, days,
+    organization: document.getElementById('gen-org').value.trim(),
+    country: document.getElementById('gen-country').value.trim().toUpperCase(),
+    state: document.getElementById('gen-state').value.trim(),
+    locality: document.getElementById('gen-locality').value.trim(),
+    key_size: parseInt(document.getElementById('gen-keysize').value),
+    usage: document.getElementById('gen-usage').value,
+    sans: document.getElementById('gen-sans').value.trim(),
+  };
+  try {
+    toast('Generating certificate...', 'info');
+    const r = await POST('/api/certificates/generate-self-signed', data);
+    toast('Certificate generated successfully', 'success');
+    closeModal('gen-cert-modal');
+    setTimeout(() => location.reload(), 800);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function importCert() {
+  const name = document.getElementById('import-name').value.trim();
+  const certPem = document.getElementById('import-cert-pem').value.trim();
+  if (!name) { toast('Certificate name is required', 'error'); return; }
+  if (!certPem) { toast('Certificate PEM is required', 'error'); return; }
+  if (!certPem.includes('BEGIN CERTIFICATE')) { toast('Invalid PEM — must contain BEGIN CERTIFICATE block', 'error'); return; }
+  const data = {
+    name,
+    usage: document.getElementById('import-usage').value,
+    cert_pem: certPem,
+    key_pem: document.getElementById('import-key-pem').value.trim(),
+    chain_pem: document.getElementById('import-chain-pem').value.trim(),
+  };
+  try {
+    await POST('/api/certificates/import', data);
+    toast('Certificate imported successfully', 'success');
+    closeModal('import-cert-modal');
+    setTimeout(() => location.reload(), 800);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+function viewCert(cert) {
+  document.getElementById('view-cert-title').textContent = 'Certificate — ' + cert.name;
+  document.getElementById('view-subject').textContent = cert.subject || cert.cn || '—';
+  document.getElementById('view-issuer').textContent = cert.issuer || (cert.cert_type === 'self-signed' ? '(Self-Signed)' : '—');
+  document.getElementById('view-not-before').textContent = cert.not_before || '—';
+  document.getElementById('view-not-after').textContent = cert.not_after || '—';
+  document.getElementById('view-fingerprint').textContent = cert.fingerprint || '—';
+  document.getElementById('view-serial').textContent = cert.serial || '—';
+  document.getElementById('view-algorithm').textContent = cert.algorithm || 'RSA';
+  document.getElementById('view-usage').innerHTML = (cert.usage || 'General').split(',').map(u =>
+    `<span class="badge badge-info" style="font-size:10px;margin-right:2px">${u.trim()}</span>`).join('');
+  document.getElementById('view-pem').value = cert.cert_pem || '(PEM not stored in DB — use Export to retrieve)';
+  openModal('view-cert-modal');
+}
+
+async function downloadCert(id) {
+  try {
+    const r = await GET(`/api/certificates/${id}/export`);
+    if (r.pem) {
+      const blob = new Blob([r.pem], { type: 'application/x-pem-file' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = (r.name || 'cert') + '.pem';
+      a.click();
+      URL.revokeObjectURL(url);
+      toast('Certificate exported', 'success');
+    } else {
+      toast('No PEM data available for this certificate', 'error');
+    }
+  } catch (e) { toast('Export error: ' + e.message, 'error'); }
+}
+
+async function deleteCert(id, name) {
+  if (!confirm2(`Delete certificate "${name}"? This cannot be undone.`)) return;
+  try {
+    await DELETE(`/api/certificates/${id}`);
+    document.getElementById(`cert-row-${id}`)?.remove();
+    toast(`Certificate "${name}" deleted`, 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+// Close modals on backdrop click
+['gen-cert-modal','import-cert-modal','view-cert-modal'].forEach(id => {
+  document.getElementById(id).addEventListener('click', e => {
+    if (e.target === document.getElementById(id)) closeModal(id);
+  });
+});
+</script>
+{% endblock %}

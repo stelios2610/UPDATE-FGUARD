@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}Updates{% endblock %}
+{% block page_title %}Software Updates{% endblock %}
+{% set active = "updates" %}
+
+{% block content %}
+
+<div style="max-width:720px">
+
+  <!-- Current version card -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-header">Installed Version</div>
+    <div style="padding:16px;display:flex;align-items:center;gap:16px">
+      <div style="font-size:28px;font-weight:700;color:var(--accent)">{{ local_version }}</div>
+      <div style="color:var(--text-muted);font-size:13px">FGUARD UTC</div>
+      <div style="margin-left:auto">
+        <button class="btn btn-secondary" onclick="checkNow()" id="btn-check">Check Now</button>
+      </div>
+    </div>
+    <div style="padding:0 16px 12px;font-size:11px;color:var(--text-muted)" id="last-check-label">
+      {% if status.last_check %}Last checked: {{ status.last_check[:19].replace('T',' ') }}{% endif %}
+    </div>
+  </div>
+
+  {% if not licensed %}
+  <!-- No license -->
+  <div class="card" style="border-color:var(--warning)">
+    <div style="padding:20px;text-align:center">
+      <div style="font-size:32px;margin-bottom:8px">🔒</div>
+      <div style="font-weight:600;color:var(--warning);margin-bottom:4px">No Valid License</div>
+      <div style="color:var(--text-muted);font-size:13px">Updates require an active FGUARD UTC license.</div>
+    </div>
+  </div>
+
+  {% elif status.error %}
+  <!-- Check error -->
+  <div class="card" style="border-color:var(--danger)">
+    <div style="padding:16px">
+      <div style="color:var(--danger);font-weight:600;margin-bottom:4px">Could not check for updates</div>
+      <div style="color:var(--text-muted);font-size:12px">{{ status.error }}</div>
+    </div>
+  </div>
+
+  {% elif status.available %}
+  <!-- Update available -->
+  <div class="card" style="border-color:var(--success)">
+    <div class="card-header" style="background:rgba(46,160,67,0.1);color:var(--success)">
+      ✦ Update Available — v{{ status.version }}
+    </div>
+    <div style="padding:16px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+        <div>
+          <div style="font-weight:600">Version {{ status.version }}</div>
+          <div style="color:var(--text-muted);font-size:12px">Released: {{ status.date }}</div>
+        </div>
+        <div style="margin-left:auto;display:flex;gap:8px">
+          {% if status.downloaded %}
+          <button class="btn btn-primary" onclick="applyUpdate()" id="btn-apply">Apply Update</button>
+          {% else %}
+          <button class="btn btn-secondary" onclick="downloadUpdate()" id="btn-download">Download</button>
+          {% endif %}
+        </div>
+      </div>
+
+      {% if status.changelog %}
+      <div style="background:var(--bg-sidebar);border:1px solid var(--border);border-radius:6px;padding:12px">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin-bottom:8px">What's New</div>
+        <ul style="margin:0;padding-left:18px;font-size:13px;line-height:1.8">
+          {% for item in status.changelog %}
+          <li>{{ item }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+
+      {% if status.downloaded %}
+      <div style="margin-top:12px;padding:10px 12px;background:rgba(46,160,67,0.08);border-radius:4px;font-size:12px;color:var(--success)">
+        ✓ Update downloaded and ready to apply
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {% else %}
+  <!-- Up to date -->
+  <div class="card">
+    <div style="padding:24px;text-align:center">
+      <div style="font-size:32px;margin-bottom:8px">✓</div>
+      <div style="font-weight:600;color:var(--success);margin-bottom:4px">Up to Date</div>
+      <div style="color:var(--text-muted);font-size:13px">You are running the latest version of FGUARD UTC.</div>
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+
+<script>
+async function checkNow() {
+  const btn = document.getElementById('btn-check');
+  btn.textContent = 'Checking...'; btn.disabled = true;
+  try {
+    const r = await fetch('/api/update/check', {method:'POST'});
+    const d = await r.json();
+    toast(d.available ? ('Update v'+d.version+' available') : 'Already up to date', d.available ? 'success' : 'info');
+    setTimeout(() => location.reload(), 1200);
+  } catch(e) { toast('Check failed: '+e.message, 'error'); }
+  finally { btn.textContent = 'Check Now'; btn.disabled = false; }
+}
+
+async function downloadUpdate() {
+  const btn = document.getElementById('btn-download');
+  btn.textContent = 'Downloading...'; btn.disabled = true;
+  try {
+    const r = await fetch('/api/update/download', {method:'POST'});
+    const d = await r.json();
+    toast(d.message || 'Done', d.status==='ok' ? 'success' : 'error');
+    if (d.status==='ok') setTimeout(() => location.reload(), 1200);
+  } catch(e) { toast('Download failed: '+e.message, 'error'); }
+  finally { btn.textContent = 'Download'; btn.disabled = false; }
+}
+
+async function applyUpdate() {
+  if (!confirm('Apply update and restart FGUARD UTC?\n\nActive connections will be interrupted briefly.')) return;
+  const btn = document.getElementById('btn-apply');
+  btn.textContent = 'Applying...'; btn.disabled = true;
+  try {
+    const r = await fetch('/api/update/apply', {method:'POST'});
+    const d = await r.json();
+    if (d.status === 'ok') {
+      toast('Update applied — restarting service...', 'success');
+      setTimeout(() => location.reload(), 5000);
+    } else {
+      toast(d.message || 'Failed', 'error');
+      btn.textContent = 'Apply Update'; btn.disabled = false;
+    }
+  } catch(e) { toast('Apply failed: '+e.message, 'error'); }
+}
+
+function toast(msg, type='info') {
+  const t = document.createElement('div');
+  const colors = {success:'#2ea043',error:'#f85149',info:'#58a6ff',warning:'#d29922'};
+  t.style.cssText = `position:fixed;bottom:20px;right:20px;background:${colors[type]||colors.info};color:#fff;padding:10px 16px;border-radius:6px;font-size:13px;z-index:9999;max-width:300px`;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3500);
+}
+</script>
+{% endblock %}

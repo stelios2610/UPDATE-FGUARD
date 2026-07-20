@@ -1,0 +1,248 @@
+{% extends "base.html" %}
+{% block title %}High Availability{% endblock %}
+{% block page_title %}High Availability (HA Cluster){% endblock %}
+{% set active = "ha" %}
+
+{% block content %}
+
+<div class="grid grid-2" style="margin-bottom:16px">
+
+  <!-- ── Cluster Status Card ── -->
+  <div class="card">
+    <div class="card-header">
+      <div><div class="card-title">Cluster Status</div>
+        <div class="card-sub">VRRP via keepalived</div></div>
+      <button class="btn btn-secondary btn-sm" onclick="refreshStatus()">Refresh</button>
+    </div>
+    <div id="ha-status-area" style="padding:8px 0">
+      <div style="display:flex;gap:24px;flex-wrap:wrap;padding-bottom:12px;border-bottom:1px solid var(--border);margin-bottom:12px">
+        <div style="text-align:center">
+          <div class="text-muted" style="font-size:11px;margin-bottom:4px">THIS NODE</div>
+          <div id="st-role" style="font-size:22px;font-weight:700;color:var(--accent)">—</div>
+        </div>
+        <div style="text-align:center">
+          <div class="text-muted" style="font-size:11px;margin-bottom:4px">VIRTUAL IP</div>
+          <div id="st-vip" style="font-size:16px;font-weight:600;font-family:monospace">—</div>
+          <div id="st-vip-held" class="text-muted" style="font-size:11px"></div>
+        </div>
+        <div style="text-align:center">
+          <div class="text-muted" style="font-size:11px;margin-bottom:4px">KEEPALIVED</div>
+          <div id="st-kp" class="badge">—</div>
+        </div>
+        <div style="text-align:center">
+          <div class="text-muted" style="font-size:11px;margin-bottom:4px">PEER</div>
+          <div id="st-peer" class="badge">—</div>
+          <div id="st-peer-lat" class="text-muted" style="font-size:11px"></div>
+        </div>
+      </div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-success" onclick="applyHA()">Apply / Start</button>
+      <button class="btn btn-danger" onclick="stopHA()">Stop</button>
+      <button class="btn btn-secondary" onclick="syncNow()">Sync Config to Peer</button>
+    </div>
+  </div>
+
+  <!-- ── Config Card ── -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">HA Configuration</div>
+      <div class="card-sub">keepalived VRRP settings</div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">This Node Role</label>
+        <select class="form-control" id="ha-role">
+          <option value="MASTER" {% if ha.role=='MASTER' %}selected{% endif %}>MASTER (Primary)</option>
+          <option value="BACKUP" {% if ha.role=='BACKUP' %}selected{% endif %}>BACKUP (Secondary)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Sync Interface (LAN)</label>
+        <input class="form-control font-mono" id="ha-iface" value="{{ ha.interface or 'eth1' }}">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Virtual IP *</label>
+        <input class="form-control font-mono" id="ha-vip" value="{{ ha.virtual_ip or '' }}" placeholder="e.g. 10.0.0.254">
+      </div>
+      <div class="form-group">
+        <label class="form-label">VIP Prefix</label>
+        <input class="form-control" id="ha-vip-mask" type="number" min="1" max="32" value="{{ ha.virtual_ip_mask or 24 }}">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">VRRP Router ID <span class="text-muted">(same on both nodes)</span></label>
+        <input class="form-control" id="ha-rid" type="number" min="1" max="255" value="{{ ha.router_id or 51 }}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Priority <span class="text-muted">(MASTER: 100, BACKUP: 90)</span></label>
+        <input class="form-control" id="ha-priority" type="number" min="1" max="254" value="{{ ha.priority or 100 }}">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Advertisement Interval (s)</label>
+        <input class="form-control" id="ha-advert" type="number" step="0.1" min="0.1" value="{{ ha.advert_interval or 1 }}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Auth Password <span class="text-muted">(same on both)</span></label>
+        <input class="form-control" id="ha-auth" type="password" value="{{ ha.auth_pass or '' }}" placeholder="Shared VRRP password">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Peer IP Address <span class="text-muted">(other node's LAN IP)</span></label>
+      <input class="form-control font-mono" id="ha-peer" value="{{ ha.peer_ip or '' }}" placeholder="e.g. 10.0.0.2">
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:12px">
+      <input type="checkbox" id="ha-preempt" {% if ha.preempt %}checked{% endif %}>
+      <div>
+        <div style="font-weight:600">Preempt</div>
+        <div class="text-muted" style="font-size:11px">MASTER reclaims role when it comes back online</div>
+      </div>
+    </label>
+    <button class="btn btn-primary" onclick="saveHAConfig()">Save Configuration</button>
+  </div>
+</div>
+
+<!-- ── Config Sync Card ── -->
+<div class="card">
+  <div class="card-header">
+    <div><div class="card-title">Configuration Sync</div>
+      <div class="card-sub">Automatically sync FGUARD UTC config from MASTER to BACKUP</div></div>
+  </div>
+  <div class="grid grid-3">
+    <div>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="ha-sync-enabled" {% if ha.sync_enabled %}checked{% endif %}>
+        <div>
+          <div style="font-weight:600">Auto Sync</div>
+          <div class="text-muted" style="font-size:11px">Periodically push config to BACKUP node</div>
+        </div>
+      </label>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Sync Target IP</label>
+      <input class="form-control font-mono" id="ha-sync-peer" value="{{ ha.sync_peer or '' }}" placeholder="BACKUP node IP">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Sync Interval (seconds)</label>
+      <input class="form-control" id="ha-sync-interval" type="number" min="10" value="{{ ha.sync_interval or 30 }}">
+    </div>
+  </div>
+  <div class="alert alert-info" style="margin-top:12px">
+    <strong>Requirement:</strong> SSH key-based auth must be set up: <code>ssh-copy-id root@&lt;BACKUP_IP&gt;</code>
+  </div>
+  <button class="btn btn-secondary" onclick="saveHAConfig()">Save Sync Settings</button>
+  <button class="btn btn-primary" onclick="syncNow()" style="margin-left:8px">Sync Now</button>
+</div>
+
+<!-- ── Setup Guide ── -->
+<div class="card" style="margin-top:16px">
+  <div class="card-header"><div class="card-title">Setup Guide</div></div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;padding-top:4px">
+    <div>
+      <div style="font-weight:700;margin-bottom:8px;color:var(--success)">MASTER Node</div>
+      <ol style="padding-left:18px;line-height:2">
+        <li>Set Role = <strong>MASTER</strong>, Priority = <strong>100</strong></li>
+        <li>Set Virtual IP (e.g. <code>10.0.0.254/24</code>)</li>
+        <li>Set VRRP Router ID (e.g. <code>51</code>)</li>
+        <li>Set Peer IP = BACKUP node's LAN IP</li>
+        <li>Set Auth Password (same on both)</li>
+        <li>Enable Auto Sync, set Sync Target = BACKUP IP</li>
+        <li>Run: <code>ssh-copy-id root@&lt;BACKUP_IP&gt;</code></li>
+        <li>Click <strong>Apply / Start</strong></li>
+      </ol>
+    </div>
+    <div>
+      <div style="font-weight:700;margin-bottom:8px;color:var(--warning)">BACKUP Node</div>
+      <ol style="padding-left:18px;line-height:2">
+        <li>Set Role = <strong>BACKUP</strong>, Priority = <strong>90</strong></li>
+        <li>Same Virtual IP as MASTER</li>
+        <li>Same VRRP Router ID as MASTER</li>
+        <li>Set Peer IP = MASTER node's LAN IP</li>
+        <li>Same Auth Password as MASTER</li>
+        <li>Click <strong>Apply / Start</strong></li>
+      </ol>
+    </div>
+  </div>
+  <div class="alert alert-warning" style="margin-top:12px">
+    Both nodes must have <code>apt install keepalived</code>. Clients connect to the <strong>Virtual IP</strong> — it automatically moves to the active MASTER.
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+async function refreshStatus() {
+  const s = await GET('/api/ha/status');
+  document.getElementById('st-role').textContent = s.current_role || '—';
+  document.getElementById('st-role').style.color = s.current_role === 'MASTER' ? 'var(--success)' : 'var(--warning)';
+
+  const cfg = await GET('/api/ha/config');
+  document.getElementById('st-vip').textContent = cfg.virtual_ip || '—';
+  document.getElementById('st-vip-held').textContent = s.virtual_ip_held ? '● Holding VIP' : '○ Not holding VIP';
+  document.getElementById('st-vip-held').style.color = s.virtual_ip_held ? 'var(--success)' : 'var(--text-muted)';
+
+  const kpBadge = document.getElementById('st-kp');
+  kpBadge.textContent = s.keepalived_active ? 'Running' : 'Stopped';
+  kpBadge.className = 'badge badge-' + (s.keepalived_active ? 'allow' : 'disabled');
+
+  const peerBadge = document.getElementById('st-peer');
+  peerBadge.textContent = s.peer_reachable ? 'Reachable' : 'Unreachable';
+  peerBadge.className = 'badge badge-' + (s.peer_reachable ? 'allow' : 'block');
+  if (s.peer_reachable && s.peer_latency_ms)
+    document.getElementById('st-peer-lat').textContent = s.peer_latency_ms + 'ms';
+}
+
+async function saveHAConfig() {
+  const data = {
+    role: document.getElementById('ha-role').value,
+    interface: document.getElementById('ha-iface').value.trim(),
+    virtual_ip: document.getElementById('ha-vip').value.trim(),
+    virtual_ip_mask: parseInt(document.getElementById('ha-vip-mask').value) || 24,
+    router_id: parseInt(document.getElementById('ha-rid').value) || 51,
+    priority: parseInt(document.getElementById('ha-priority').value) || 100,
+    advert_interval: parseFloat(document.getElementById('ha-advert').value) || 1,
+    auth_pass: document.getElementById('ha-auth').value,
+    peer_ip: document.getElementById('ha-peer').value.trim(),
+    preempt: document.getElementById('ha-preempt').checked ? 1 : 0,
+    sync_enabled: document.getElementById('ha-sync-enabled').checked ? 1 : 0,
+    sync_peer: document.getElementById('ha-sync-peer').value.trim(),
+    sync_interval: parseInt(document.getElementById('ha-sync-interval').value) || 30,
+    enabled: 1,
+  };
+  try {
+    await POST('/api/ha/config', data);
+    toast('HA configuration saved', 'success');
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function applyHA() {
+  toast('Starting keepalived...', 'info');
+  const r = await POST('/api/ha/apply');
+  toast(r.message, r.status === 'ok' ? 'success' : 'error');
+  setTimeout(refreshStatus, 1500);
+}
+
+async function stopHA() {
+  if (!confirm2('Stop keepalived? This node will release the Virtual IP.')) return;
+  const r = await POST('/api/ha/stop');
+  toast(r.message, 'info');
+  setTimeout(refreshStatus, 1000);
+}
+
+async function syncNow() {
+  toast('Syncing config to peer...', 'info');
+  const r = await POST('/api/ha/sync');
+  toast(r.message, r.status === 'ok' ? 'success' : 'error');
+}
+
+// Auto-refresh on load
+refreshStatus();
+setInterval(refreshStatus, 10000);
+</script>
+{% endblock %}

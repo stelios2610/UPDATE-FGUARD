@@ -1,0 +1,396 @@
+{% extends "base.html" %}
+{% block title %}Proxy Rules{% endblock %}
+{% block page_title %}Proxy Rules{% endblock %}
+{% set active = "proxies" %}
+
+{% block content %}
+
+<!-- Info Box -->
+<div class="alert alert-info" style="margin-bottom:16px">
+  <strong>Proxy Rules</strong> intercept and inspect traffic at the application layer before it reaches the destination.
+  HTTP/HTTPS proxies can filter web content; SMTP proxies scan email for malware and spam; DNS proxies can block domains at the resolver level; FTP proxies inspect file transfers.
+  Rules are applied in order — the first matching rule wins.
+</div>
+
+<!-- Tab Navigation -->
+<div class="toolbar" style="margin-bottom:16px;gap:0;padding:0;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;overflow:hidden">
+  <button class="btn btn-secondary" id="tab-btn-all" onclick="switchTab('all')" style="border-radius:0;border:none;border-right:1px solid var(--border)">All Rules</button>
+  <button class="btn btn-secondary" id="tab-btn-http" onclick="switchTab('http')" style="border-radius:0;border:none;border-right:1px solid var(--border)">HTTP</button>
+  <button class="btn btn-secondary" id="tab-btn-https" onclick="switchTab('https')" style="border-radius:0;border:none;border-right:1px solid var(--border)">HTTPS</button>
+  <button class="btn btn-secondary" id="tab-btn-smtp" onclick="switchTab('smtp')" style="border-radius:0;border:none;border-right:1px solid var(--border)">SMTP</button>
+  <button class="btn btn-secondary" id="tab-btn-dns" onclick="switchTab('dns')" style="border-radius:0;border:none;border-right:1px solid var(--border)">DNS</button>
+  <button class="btn btn-secondary" id="tab-btn-ftp" onclick="switchTab('ftp')" style="border-radius:0;border:none">FTP</button>
+</div>
+
+<!-- All proxy types share one card, filtered by tab -->
+<div class="card">
+  <div class="card-header">
+    <div>
+      <div class="card-title" id="proxy-table-title">All Proxy Rules</div>
+      <div class="card-sub" id="proxy-table-sub">{{ proxy_rules|length }} rule(s) configured across all proxy types</div>
+    </div>
+    <div class="btn-group">
+      <input class="form-control" id="proxy-search" placeholder="Filter rules..." style="width:200px">
+      <button class="btn btn-primary" onclick="openModal('add-proxy-modal')">+ Add Rule</button>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table id="proxy-table">
+      <thead>
+        <tr><th>Name</th><th>Proxy Type</th><th>Action</th><th>Pattern / Target</th><th>Priority</th><th>Enabled</th><th>Actions</th></tr>
+      </thead>
+      <tbody id="proxy-tbody">
+        {% for r in proxy_rules %}
+        <tr id="proxy-row-{{ r.id }}" data-type="{{ r.proxy_type | lower }}">
+          <td>{{ r.name }}</td>
+          <td>
+            {% if r.proxy_type | upper == 'HTTP' %}
+            <span class="badge badge-info">HTTP</span>
+            {% elif r.proxy_type | upper == 'HTTPS' %}
+            <span class="badge badge-allow">HTTPS</span>
+            {% elif r.proxy_type | upper == 'SMTP' %}
+            <span class="badge badge-warn">SMTP</span>
+            {% elif r.proxy_type | upper == 'DNS' %}
+            <span class="badge badge-block">DNS</span>
+            {% elif r.proxy_type | upper == 'FTP' %}
+            <span class="badge badge-disabled">FTP</span>
+            {% else %}
+            <span class="badge badge-info">{{ r.proxy_type }}</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if r.action | upper == 'ALLOW' %}
+            <span class="badge badge-allow">ALLOW</span>
+            {% elif r.action | upper == 'BLOCK' %}
+            <span class="badge badge-block">BLOCK</span>
+            {% elif r.action | upper == 'INSPECT' %}
+            <span class="badge badge-warn">INSPECT</span>
+            {% elif r.action | upper == 'REDIRECT' %}
+            <span class="badge badge-info">REDIRECT</span>
+            {% else %}
+            <span class="badge badge-disabled">{{ r.action }}</span>
+            {% endif %}
+          </td>
+          <td class="font-mono" style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ r.pattern }}">
+            {{ r.pattern or '—' }}
+          </td>
+          <td>{{ r.priority | default(100) }}</td>
+          <td>
+            <label style="cursor:pointer">
+              <input type="checkbox" {{ 'checked' if r.enabled }} onchange="toggleProxy({{ r.id }}, this.checked)">
+            </label>
+          </td>
+          <td>
+            <div class="btn-group">
+              <button class="btn btn-secondary btn-sm" onclick="editProxy({{ r|tojson }})">Edit</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteProxy({{ r.id }})">✕</button>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr id="proxy-empty-row">
+          <td colspan="7" class="text-muted" style="text-align:center;padding:30px">No proxy rules configured. Add a rule to start inspecting traffic.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Proxy Type Info Cards -->
+<div class="grid grid-3" style="margin-top:16px">
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">HTTP / HTTPS Proxy</div>
+    </div>
+    <div class="text-muted" style="font-size:12px;line-height:1.6">
+      Intercepts web traffic on ports 80/443. Supports URL pattern matching, content inspection, SSL inspection (HTTPS), and category-based filtering. Can block, allow, or redirect requests based on URL, domain, MIME type, or content.
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">SMTP Proxy</div>
+    </div>
+    <div class="text-muted" style="font-size:12px;line-height:1.6">
+      Inspects email traffic on port 25/587/465. Blocks spam, scans attachments for malware, enforces sender/recipient policies, and can quarantine suspicious messages. Supports SPF/DKIM validation.
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">DNS / FTP Proxy</div>
+    </div>
+    <div class="text-muted" style="font-size:12px;line-height:1.6">
+      DNS proxy intercepts DNS queries on port 53 for domain-level blocking and logging. FTP proxy inspects file transfer protocol traffic on port 21, scanning uploaded/downloaded files for malware and enforcing transfer policies.
+    </div>
+  </div>
+</div>
+
+<!-- Add/Edit Proxy Rule Modal -->
+<div class="modal-overlay" id="add-proxy-modal">
+  <div class="modal" style="width:600px">
+    <div class="modal-header">
+      <span class="modal-title" id="proxy-modal-title">Add Proxy Rule</span>
+      <button class="modal-close" onclick="closeModal('add-proxy-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="proxy-id">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Rule Name *</label>
+          <input class="form-control" id="proxy-name" placeholder="e.g. Block Social Media">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Priority</label>
+          <input class="form-control" id="proxy-priority" type="number" value="100" min="1" max="9999">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Proxy Type</label>
+          <select class="form-control" id="proxy-type" onchange="onProxyTypeChange()">
+            <option value="HTTP">HTTP</option>
+            <option value="HTTPS">HTTPS</option>
+            <option value="SMTP">SMTP</option>
+            <option value="DNS">DNS</option>
+            <option value="FTP">FTP</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Action</label>
+          <select class="form-control" id="proxy-action">
+            <option value="BLOCK">BLOCK</option>
+            <option value="ALLOW">ALLOW</option>
+            <option value="INSPECT">INSPECT</option>
+            <option value="REDIRECT">REDIRECT</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" id="proxy-pattern-label">URL Pattern / Domain *</label>
+        <input class="form-control font-mono" id="proxy-pattern" placeholder="e.g. *.facebook.com or ^https?://(www\.)?twitter\.com">
+        <small class="text-muted" id="proxy-pattern-hint">Supports wildcards (* and ?) or full regex patterns</small>
+      </div>
+      <div id="proxy-redirect-field" style="display:none">
+        <div class="form-group">
+          <label class="form-label">Redirect URL</label>
+          <input class="form-control font-mono" id="proxy-redirect-url" placeholder="e.g. http://blocked.internal/notice.html">
+        </div>
+      </div>
+      <div id="proxy-http-fields">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Source IP / Subnet</label>
+            <input class="form-control font-mono" id="proxy-source-ip" placeholder="blank = any">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Category</label>
+            <select class="form-control" id="proxy-category">
+              <option value="">None</option>
+              <option value="social">Social Media</option>
+              <option value="adult">Adult Content</option>
+              <option value="gambling">Gambling</option>
+              <option value="malware">Malware/Phishing</option>
+              <option value="streaming">Video Streaming</option>
+              <option value="gaming">Gaming</option>
+              <option value="news">News</option>
+              <option value="shopping">Shopping</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div id="proxy-smtp-fields" style="display:none">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Sender Pattern</label>
+            <input class="form-control font-mono" id="proxy-smtp-from" placeholder="e.g. *@spam-domain.com">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Recipient Pattern</label>
+            <input class="form-control font-mono" id="proxy-smtp-to" placeholder="e.g. *@internal.com">
+          </div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Description</label>
+        <input class="form-control" id="proxy-desc" placeholder="Optional notes about this rule">
+      </div>
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="proxy-enabled" checked> Rule Enabled
+        </label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('add-proxy-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveProxy()">Save Rule</button>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const PROXY_TABS = ['all','http','https','smtp','dns','ftp'];
+let currentTab = 'all';
+
+function switchTab(name) {
+  currentTab = name;
+  PROXY_TABS.forEach(t => {
+    const btn = document.getElementById('tab-btn-' + t);
+    if (btn) {
+      btn.style.background = t === name ? 'var(--accent)' : '';
+      btn.style.color = t === name ? '#fff' : '';
+    }
+  });
+
+  const rows = document.querySelectorAll('#proxy-tbody tr[data-type]');
+  rows.forEach(row => {
+    row.style.display = (name === 'all' || row.dataset.type === name) ? '' : 'none';
+  });
+
+  const titleEl = document.getElementById('proxy-table-title');
+  const subEl = document.getElementById('proxy-table-sub');
+  const visible = name === 'all' ? rows.length : Array.from(rows).filter(r => r.dataset.type === name).length;
+  titleEl.textContent = name === 'all' ? 'All Proxy Rules' : name.toUpperCase() + ' Proxy Rules';
+  subEl.textContent = visible + ' rule(s)' + (name === 'all' ? ' across all proxy types' : ' for ' + name.toUpperCase() + ' proxy');
+
+  // Pre-select type in modal
+  if (name !== 'all') document.getElementById('proxy-type').value = name.toUpperCase();
+}
+switchTab('all');
+
+// Search filter
+document.getElementById('proxy-search').addEventListener('input', function() {
+  const q = this.value.toLowerCase();
+  document.querySelectorAll('#proxy-tbody tr[data-type]').forEach(row => {
+    const match = row.textContent.toLowerCase().includes(q);
+    const typeMatch = currentTab === 'all' || row.dataset.type === currentTab;
+    row.style.display = (match && typeMatch) ? '' : 'none';
+  });
+});
+
+function onProxyTypeChange() {
+  const type = document.getElementById('proxy-type').value.toLowerCase();
+  const httpFields = document.getElementById('proxy-http-fields');
+  const smtpFields = document.getElementById('proxy-smtp-fields');
+  const patternLabel = document.getElementById('proxy-pattern-label');
+  const patternHint = document.getElementById('proxy-pattern-hint');
+  const patternInput = document.getElementById('proxy-pattern');
+
+  httpFields.style.display = (type === 'http' || type === 'https' || type === 'ftp') ? '' : 'none';
+  smtpFields.style.display = type === 'smtp' ? '' : 'none';
+
+  if (type === 'dns') {
+    patternLabel.textContent = 'Domain Pattern *';
+    patternHint.textContent = 'e.g. *.ads.example.com or ^malware-.*\\.net$';
+    patternInput.placeholder = 'e.g. *.tracker.com';
+  } else if (type === 'smtp') {
+    patternLabel.textContent = 'Subject / Body Pattern';
+    patternHint.textContent = 'Regex pattern to match in email subject or body';
+    patternInput.placeholder = 'e.g. (v1agra|phish|click here)';
+  } else if (type === 'ftp') {
+    patternLabel.textContent = 'Filename Pattern *';
+    patternHint.textContent = 'e.g. *.exe or *.zip (wildcard file patterns)';
+    patternInput.placeholder = 'e.g. *.exe';
+  } else {
+    patternLabel.textContent = 'URL Pattern / Domain *';
+    patternHint.textContent = 'Supports wildcards (* and ?) or full regex patterns';
+    patternInput.placeholder = 'e.g. *.facebook.com';
+  }
+}
+
+document.getElementById('proxy-action').addEventListener('change', function() {
+  document.getElementById('proxy-redirect-field').style.display = this.value === 'REDIRECT' ? '' : 'none';
+});
+
+function editProxy(r) {
+  document.getElementById('proxy-id').value = r.id;
+  document.getElementById('proxy-name').value = r.name;
+  document.getElementById('proxy-priority').value = r.priority || 100;
+  document.getElementById('proxy-type').value = r.proxy_type || 'HTTP';
+  document.getElementById('proxy-action').value = r.action || 'BLOCK';
+  document.getElementById('proxy-pattern').value = r.pattern || '';
+  document.getElementById('proxy-source-ip').value = r.source_ip || '';
+  document.getElementById('proxy-category').value = r.category || '';
+  document.getElementById('proxy-smtp-from').value = r.smtp_from || '';
+  document.getElementById('proxy-smtp-to').value = r.smtp_to || '';
+  document.getElementById('proxy-redirect-url').value = r.redirect_url || '';
+  document.getElementById('proxy-desc').value = r.description || '';
+  document.getElementById('proxy-enabled').checked = !!r.enabled;
+  document.getElementById('proxy-modal-title').textContent = 'Edit Proxy Rule';
+  onProxyTypeChange();
+  document.getElementById('proxy-redirect-field').style.display = r.action === 'REDIRECT' ? '' : 'none';
+  openModal('add-proxy-modal');
+}
+
+async function saveProxy() {
+  const id = document.getElementById('proxy-id').value;
+  const name = document.getElementById('proxy-name').value.trim();
+  const pattern = document.getElementById('proxy-pattern').value.trim();
+  if (!name) { toast('Rule name is required', 'error'); return; }
+  if (!pattern) { toast('Pattern is required', 'error'); return; }
+  const data = {
+    name, pattern,
+    proxy_type: document.getElementById('proxy-type').value,
+    action: document.getElementById('proxy-action').value,
+    priority: parseInt(document.getElementById('proxy-priority').value) || 100,
+    source_ip: document.getElementById('proxy-source-ip').value.trim(),
+    category: document.getElementById('proxy-category').value,
+    smtp_from: document.getElementById('proxy-smtp-from').value.trim(),
+    smtp_to: document.getElementById('proxy-smtp-to').value.trim(),
+    redirect_url: document.getElementById('proxy-redirect-url').value.trim(),
+    description: document.getElementById('proxy-desc').value.trim(),
+    enabled: document.getElementById('proxy-enabled').checked ? 1 : 0,
+  };
+  try {
+    if (id) await PUT(`/api/proxies/${id}`, data);
+    else await POST('/api/proxies', data);
+    toast('Proxy rule saved', 'success');
+    closeModal('add-proxy-modal');
+    setTimeout(() => location.reload(), 600);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function toggleProxy(id, enabled) {
+  try {
+    await POST(`/api/proxies/${id}/toggle`);
+    toast(enabled ? 'Proxy rule enabled' : 'Proxy rule disabled', 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function deleteProxy(id) {
+  if (!confirm2('Delete this proxy rule?')) return;
+  try {
+    await DELETE(`/api/proxies/${id}`);
+    document.getElementById(`proxy-row-${id}`)?.remove();
+    toast('Proxy rule deleted', 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+function clearProxyForm() {
+  ['proxy-id','proxy-name','proxy-pattern','proxy-source-ip','proxy-desc','proxy-smtp-from','proxy-smtp-to','proxy-redirect-url'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  document.getElementById('proxy-priority').value = '100';
+  document.getElementById('proxy-type').value = currentTab !== 'all' ? currentTab.toUpperCase() : 'HTTP';
+  document.getElementById('proxy-action').value = 'BLOCK';
+  document.getElementById('proxy-enabled').checked = true;
+  document.getElementById('proxy-modal-title').textContent = 'Add Proxy Rule';
+  onProxyTypeChange();
+  document.getElementById('proxy-redirect-field').style.display = 'none';
+}
+
+document.getElementById('add-proxy-modal').addEventListener('click', e => {
+  if (e.target === document.getElementById('add-proxy-modal')) {
+    closeModal('add-proxy-modal');
+    clearProxyForm();
+  }
+});
+
+// Initialize proxy type change handlers
+onProxyTypeChange();
+</script>
+{% endblock %}

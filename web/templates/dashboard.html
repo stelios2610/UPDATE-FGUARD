@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block page_title %}Dashboard{% endblock %}
+
+{% block content %}
+{% set active = "dashboard" %}
+
+<!-- Stat Cards -->
+<div class="grid grid-5 mb-8" style="margin-bottom:16px">
+  <div class="stat-card blue">
+    <div class="value" id="stat-conns">{{ conn_count }}</div>
+    <div class="label">Active Connections</div>
+  </div>
+  <div class="stat-card red">
+    <div class="value" id="stat-blocked">{{ stats.blocked }}</div>
+    <div class="label">Total Blocked</div>
+  </div>
+  <div class="stat-card orange">
+    <div class="value" id="stat-threats">{{ threat_count }}</div>
+    <div class="label">Threats Detected</div>
+  </div>
+  <div class="stat-card green">
+    <div class="value" id="stat-sent">—</div>
+    <div class="label">Total Sent</div>
+  </div>
+  <div class="stat-card blue">
+    <div class="value" id="stat-recv">—</div>
+    <div class="label">Total Received</div>
+  </div>
+</div>
+
+<!-- System stats row -->
+<div class="grid grid-4" style="margin-bottom:16px">
+  <div class="stat-card">
+    <div class="value" id="stat-cpu" style="font-size:20px">—</div>
+    <div class="label">CPU Usage</div>
+  </div>
+  <div class="stat-card">
+    <div class="value" id="stat-mem" style="font-size:20px">—</div>
+    <div class="label">Memory Usage</div>
+  </div>
+  <div class="stat-card green">
+    <div class="value" style="font-size:20px">{{ stats.today }}</div>
+    <div class="label">Events Today</div>
+  </div>
+  <div class="stat-card">
+    <div class="value" style="font-size:20px">{{ stats.total }}</div>
+    <div class="label">Total Log Entries</div>
+  </div>
+</div>
+
+<div class="grid grid-2">
+  <!-- Recent Connections -->
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <div class="card-title">Active Connections</div>
+        <div class="card-sub">Last {{ connections|length }} connections</div>
+      </div>
+      <a href="/monitor" class="btn btn-secondary btn-sm">View All</a>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Proto</th><th>Local</th><th>Remote</th><th>Status</th><th>Process</th></tr></thead>
+        <tbody>
+          {% for c in connections %}
+          <tr>
+            <td><span class="badge badge-{{ 'info' if c.proto == 'TCP' else 'warn' }}">{{ c.proto }}</span></td>
+            <td class="font-mono">{{ c.local_ip }}:{{ c.local_port }}</td>
+            <td class="font-mono">{{ c.remote_ip or '—' }}{% if c.remote_port %}:{{ c.remote_port }}{% endif %}</td>
+            <td><span class="badge badge-{{ 'allow' if c.status == 'Established' else 'disabled' }}">{{ c.status }}</span></td>
+            <td class="text-muted">{{ c.process }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="text-muted" style="text-align:center;padding:20px">No active connections</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Recent Threats -->
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <div class="card-title">Recent Threats</div>
+        <div class="card-sub">IPS detection alerts</div>
+      </div>
+      <div class="btn-group">
+        <a href="/ips" class="btn btn-secondary btn-sm">View All</a>
+        <button class="btn btn-secondary btn-sm" onclick="clearAlerts()">Clear</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Severity</th><th>Threat</th><th>Source IP</th><th>Detail</th></tr></thead>
+        <tbody id="alert-tbody">
+          {% for a in alerts %}
+          {% set sc = {'CRITICAL':'critical','HIGH':'high','MEDIUM':'med','LOW':'info'} %}
+          <tr>
+            <td><span class="badge badge-{{ sc.get(a.severity,'info') }}">{{ a.severity }}</span></td>
+            <td>{{ a.name }}</td>
+            <td class="font-mono">{{ a.remote_ip }}</td>
+            <td class="text-muted">{{ a.detail }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="text-muted" style="text-align:center;padding:20px">No threats detected</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Network stats -->
+<div class="card" style="margin-top:16px">
+  <div class="card-header">
+    <div class="card-title">Network Interfaces</div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Interface</th><th>Total Sent</th><th>Total Received</th></tr></thead>
+      <tbody>
+        {% for name, s in net_stats.items() if name != 'bytes_sent' and name != 'bytes_recv' and name != 'packets_sent' and name != 'packets_recv' %}
+        {% endfor %}
+        <tr>
+          <td>All Interfaces</td>
+          <td class="font-mono">{{ (net_stats.bytes_sent / 1048576)|round(1) }} MB</td>
+          <td class="font-mono">{{ (net_stats.bytes_recv / 1048576)|round(1) }} MB</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+async function clearAlerts() {
+  await POST('/api/ips/clear');
+  refreshAlerts();
+  toast('Alerts cleared', 'success');
+}
+setInterval(refreshDashboardStats, 4000);
+setInterval(refreshAlerts, 5000);
+refreshAlerts();
+</script>
+{% endblock %}

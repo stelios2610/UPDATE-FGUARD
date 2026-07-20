@@ -1,0 +1,815 @@
+{% extends "base.html" %}
+{% block title %}VPN{% endblock %}
+{% block page_title %}VPN{% endblock %}
+{% set active = "vpn" %}
+
+{% block content %}
+<div style="display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid var(--border)">
+  {% for tid, tlabel in [('ssl','Mobile VPN / SSL'),('bov','Branch Office VPN'),('mobile','Remote Access'),('users','VPN Users'),('ipsec-sa','IPSec SA')] %}
+  <button class="btn btn-secondary" id="tab-btn-{{tid}}"
+    onclick="switchTab('{{tid}}')"
+    style="border-radius:6px 6px 0 0;border-bottom:none;margin-right:2px{% if loop.first %};background:var(--bg-card);color:#fff{% endif %}">
+    {{tlabel}}
+  </button>
+  {% endfor %}
+</div>
+
+<!-- SSL VPN TAB -->
+<div id="tab-ssl">
+
+  <!-- Public IP Card -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-header">
+      <div>
+        <div class="card-title">Public IP Address</div>
+        <div class="card-sub">Used in all client .ovpn configs. Update when your ISP changes your IP.</div>
+      </div>
+      <span id="ovpn-server-badge" class="badge badge-disabled">Loading...</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;padding:14px 20px">
+      <input class="form-control" id="public-ip-input" style="max-width:220px;font-family:monospace;font-size:15px;font-weight:600"
+             placeholder="e.g. 79.130.148.240" value="">
+      <button class="btn btn-secondary" onclick="detectPublicIP()" title="Auto-detect my current public IP">
+        🔍 Auto-detect
+      </button>
+      <button class="btn btn-success" onclick="savePublicIP()">
+        💾 Save
+      </button>
+      <span id="public-ip-status" style="font-size:12px;color:var(--text-muted)"></span>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;padding:0 20px 16px">
+      <button class="btn btn-success" id="ovpn-start-btn" onclick="startOpenVPN()">▶ Start OpenVPN Server</button>
+      <button class="btn btn-danger"  id="ovpn-stop-btn"  onclick="stopOpenVPN()">■ Stop OpenVPN Server</button>
+      <button class="btn btn-secondary" onclick="window.open('/api/vpn/openvpn/client-config','_blank')">
+        ⬇ Download Client .ovpn
+      </button>
+      <span id="ovpn-details" style="font-size:11px;color:var(--text-muted);margin-left:8px"></span>
+    </div>
+  </div>
+
+  <div class="grid grid-2" style="margin-bottom:16px">
+    <div class="card">
+      <div class="card-header">
+        <div><div class="card-title">Mobile VPN with SSL</div>
+          <div class="card-sub">OpenVPN server — users connect with username + password</div></div>
+        <span id="ssl-status-badge" class="badge badge-{{ 'allow' if ssl_config and ssl_config.status == 'Running' else 'disabled' }}">
+          {{ ssl_config.status if ssl_config else 'Not Configured' }}
+        </span>
+      </div>
+      {% if not ssl_initialized %}
+      <div class="alert alert-warning"><strong>PKI not initialized.</strong> Click "Auto Setup" to generate CA and server certificates automatically.</div>
+      <button class="btn btn-primary" onclick="initSSLVPN()">Auto Setup SSL VPN</button>
+      {% else %}
+      <div class="alert alert-success">PKI initialized. Configure and start the server.</div>
+      {% endif %}
+      <div class="form-row" style="margin-top:14px">
+        <div class="form-group"><label class="form-label">Port</label>
+          <input class="form-control" id="ssl-port" type="number" value="{{ ssl_config.port if ssl_config else 1194 }}"></div>
+        <div class="form-group"><label class="form-label">Protocol</label>
+          <select class="form-control" id="ssl-proto">
+            <option {% if ssl_config and ssl_config.protocol=='udp' %}selected{% endif %}>udp</option>
+            <option {% if ssl_config and ssl_config.protocol=='tcp' %}selected{% endif %}>tcp</option>
+          </select></div>
+        <div class="form-group"><label class="form-label">VPN Subnet</label>
+          <input class="form-control" id="ssl-subnet" value="{{ ssl_config.server_subnet if ssl_config else '10.8.0.0' }}"></div>
+        <div class="form-group"><label class="form-label">DNS</label>
+          <input class="form-control" id="ssl-dns1" value="{{ ssl_config.dns1 if ssl_config else '1.1.1.1' }}"></div>
+        <div class="form-group"><label class="form-label">DNS Domain</label>
+          <input class="form-control" id="ssl-dns-domain" placeholder="e.g. STELIOS" value="{{ ssl_config.dns_domain if ssl_config and ssl_config.dns_domain else '' }}"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Cipher</label>
+          <select class="form-control" id="ssl-cipher">
+            {% for c in ['AES-256-GCM','AES-128-GCM','AES-256-CBC','CHACHA20-POLY1305'] %}
+            <option {% if ssl_config and ssl_config.cipher==c %}selected{% endif %}>{{c}}</option>{% endfor %}
+          </select></div>
+        <div class="form-group"><label class="form-label">Auth Hash</label>
+          <select class="form-control" id="ssl-auth">
+            {% for a in ['SHA256','SHA384','SHA512'] %}<option {% if ssl_config and ssl_config.auth==a %}selected{% endif %}>{{a}}</option>{% endfor %}
+          </select></div>
+        <div class="form-group"><label class="form-label">Min TLS</label>
+          <select class="form-control" id="ssl-tls">
+            <option {% if ssl_config and ssl_config.tls_version=='1.2' %}selected{% endif %}>1.2</option>
+            <option {% if ssl_config and ssl_config.tls_version=='1.3' %}selected{% endif %}>1.3</option>
+          </select></div>
+        <div class="form-group" style="display:flex;align-items:flex-end">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="ssl-redirect" {% if ssl_config and ssl_config.redirect_gateway %}checked{% endif %}> Route all traffic
+          </label></div>
+      </div>
+      <div class="btn-group" style="margin-top:10px">
+        <button class="btn btn-secondary" onclick="saveSSLConfig()">Save Config</button>
+        <button class="btn btn-success" onclick="startSSLVPN()" {% if not ssl_initialized %}disabled{% endif %}>Start Server</button>
+        <button class="btn btn-danger" onclick="stopSSLVPN()">Stop</button>
+        <button class="btn btn-secondary" onclick="window.open('/api/vpn/ssl/server-config','_blank')">Download server.conf</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><div class="card-title">Connected Clients</div>
+        <button class="btn btn-secondary btn-sm" onclick="refreshSSLClients()">Refresh</button></div>
+      <div class="table-wrap">
+        <table><thead><tr><th>Username</th><th>Real IP</th><th>Bytes In</th><th>Bytes Out</th><th>Since</th></tr></thead>
+        <tbody id="ssl-clients"><tr><td colspan="5" class="text-muted" style="text-align:center;padding:20px">No connected clients</td></tr></tbody>
+        </table></div>
+    </div>
+  </div>
+</div>
+
+  <!-- Push Routes Card -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-header">
+      <div>
+        <div class="card-title">VPN Client Access — Push Routes</div>
+        <div class="card-sub">Subnets pushed to connected VPN clients. Applies on next server start.</div>
+      </div>
+    </div>
+    <div style="padding:14px 20px">
+      <div class="table-wrap" style="margin-bottom:14px">
+        <table id="ssl-routes-table">
+          <thead><tr><th>Network</th><th>Netmask</th><th>Description</th><th></th></tr></thead>
+          <tbody id="ssl-routes-body">
+            <tr><td colspan="4" class="text-muted" style="text-align:center;padding:16px">No routes configured</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+        <div class="form-group" style="margin:0">
+          <label class="form-label">Network</label>
+          <input class="form-control" id="route-network" placeholder="192.168.10.0" style="width:160px">
+        </div>
+        <div class="form-group" style="margin:0">
+          <label class="form-label">Netmask</label>
+          <input class="form-control" id="route-netmask" placeholder="255.255.255.0" style="width:160px">
+        </div>
+        <div class="form-group" style="margin:0">
+          <label class="form-label">Description</label>
+          <input class="form-control" id="route-desc" placeholder="e.g. Office LAN" style="width:180px">
+        </div>
+        <button class="btn btn-success" onclick="addSSLRoute()">+ Add Route</button>
+      </div>
+    </div>
+  </div>
+
+<!-- BRANCH OFFICE VPN TAB -->
+<div id="tab-bov" class="hidden">
+  <div class="card">
+    <div class="card-header">
+      <div><div class="card-title">Branch Office VPN (Site-to-Site)</div>
+        <div class="card-sub">{{ bov_tunnels|length }} tunnel(s) — IKEv2 / IKEv1 / L2TP-IPSec / SSL-OpenVPN / WireGuard</div></div>
+      <div class="btn-group">
+        <button class="btn btn-primary" onclick="openModal('bov-modal')">+ New Tunnel</button>
+        <button class="btn btn-secondary" onclick="applyIPSec()">Apply IPSec Config</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Type</th><th>Remote Gateway</th><th>Local Subnets</th><th>Remote Subnets</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody>
+          {% for t in bov_tunnels %}
+          <tr id="bov-{{ t.id }}">
+            <td><strong>{{ t.name }}</strong>{% if t.description %}<br><span class="text-muted" style="font-size:11px">{{ t.description }}</span>{% endif %}</td>
+            <td><span class="badge badge-info">{{ t.type }}</span></td>
+            <td class="font-mono">{{ t.remote_gateway }}</td>
+            <td class="font-mono text-muted" style="font-size:11px">{{ t.local_subnets or 'all' }}</td>
+            <td class="font-mono text-muted" style="font-size:11px">{{ t.remote_subnets }}</td>
+            <td><span class="badge badge-{{ 'allow' if t.status=='Up' else ('warn' if t.status=='Connecting' else 'disabled') }}">{{ t.status }}</span></td>
+            <td>
+              <div class="btn-group">
+                <button class="btn btn-success btn-sm" onclick="connectBOV({{ t.id }})">Up</button>
+                <button class="btn btn-secondary btn-sm" onclick="disconnectBOV({{ t.id }})">Down</button>
+                <button class="btn btn-secondary btn-sm" onclick="window.open('/api/vpn/bov/{{ t.id }}/peer-config','_blank')">Peer Config</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteBOV({{ t.id }})">✕</button>
+              </div>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="7" class="text-muted" style="text-align:center;padding:30px">No tunnels. Click "+ New Tunnel".</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card" style="margin-top:16px">
+    <div class="card-header"><div class="card-title">IPSec Status (StrongSwan)</div>
+      <button class="btn btn-secondary btn-sm" onclick="refreshIPSecStatus()">Refresh</button></div>
+    <pre id="ipsec-status" style="font-size:11px;color:var(--text-muted);max-height:180px;overflow:auto;margin:0;padding:8px">Click Refresh...</pre>
+  </div>
+</div>
+
+<!-- REMOTE ACCESS TAB -->
+<div id="tab-mobile" class="hidden">
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Remote Access VPN Profiles (Client mode)</div>
+      <div class="btn-group">
+        <button class="btn btn-primary" onclick="openModal('profile-modal')">+ Add Profile</button>
+        <button class="btn btn-secondary" onclick="openModal('wg-gen-modal')">WG Key Generator</button>
+        <button class="btn btn-secondary" onclick="openModal('ovpn-pki-modal')">OpenVPN PKI</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table><thead><tr><th>Name</th><th>Type</th><th>Server</th><th>Config</th><th>Status</th><th>Actions</th></tr></thead>
+      <tbody>
+        {% for p in profiles %}
+        <tr>
+          <td>{{ p.name }}</td>
+          <td><span class="badge badge-info">{{ p.type }}</span></td>
+          <td class="font-mono text-muted">{{ p.server or '—' }}</td>
+          <td class="font-mono text-muted" style="font-size:11px">{{ p.config_path }}</td>
+          <td><span class="badge badge-{{ 'allow' if p.live_status=='Connected' else ('warn' if p.live_status=='Connecting' else 'disabled') }}">{{ p.live_status }}</span></td>
+          <td><div class="btn-group">
+            <button class="btn btn-success btn-sm" onclick="connectProfile({{ p.id }})">Connect</button>
+            <button class="btn btn-secondary btn-sm" onclick="disconnectProfile({{ p.id }})">Down</button>
+            <button class="btn btn-danger btn-sm" onclick="deleteProfile({{ p.id }})">✕</button>
+          </div></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="text-muted" style="text-align:center;padding:20px">No profiles defined.</td></tr>
+        {% endfor %}
+      </tbody></table>
+    </div>
+  </div>
+</div>
+
+<!-- VPN USERS TAB -->
+<div id="tab-users" class="hidden">
+  <div class="card">
+    <div class="card-header">
+      <div><div class="card-title">VPN Users</div>
+        <div class="card-sub">Users that authenticate to the SSL VPN with username + password. Download per-user .ovpn configs.</div></div>
+      <button class="btn btn-primary" onclick="openModal('vpnuser-modal')">+ Add User</button>
+    </div>
+    <input id="search-input" class="form-control" style="max-width:240px;margin-bottom:12px" placeholder="Search users...">
+    <div class="table-wrap">
+      <table id="main-table">
+        <thead><tr><th>Username</th><th>Full Name</th><th>Group</th><th>Tunnel IP</th><th>MFA</th><th>Status</th><th>Expires</th><th>Last Login</th><th>Actions</th></tr></thead>
+        <tbody>
+          {% for u in vpn_users %}
+          <tr id="vuser-{{ u.id }}">
+            <td><strong>{{ u.username }}</strong></td>
+            <td>{{ u.full_name or '—' }}</td>
+            <td><span class="badge badge-info">{{ u.group_name }}</span></td>
+            <td class="font-mono">{{ u.tunnel_ip or 'dynamic' }}</td>
+            <td>{{ '🔐 On' if u.mfa_enabled else 'Off' }}</td>
+            <td><span class="badge badge-{{ 'allow' if u.enabled else 'disabled' }}">{{ 'Active' if u.enabled else 'Disabled' }}</span></td>
+            <td class="text-muted" style="font-size:11px">{{ u.expires_at or '∞' }}</td>
+            <td class="text-muted" style="font-size:11px">{{ u.last_connected[:10] if u.last_connected else 'Never' }}</td>
+            <td>
+              <div class="btn-group">
+                <button class="btn btn-secondary btn-sm" onclick="downloadUserConfig({{ u.id }},'{{ u.username }}')">↓ .ovpn</button>
+                <button class="btn btn-secondary btn-sm" onclick="toggleVPNUser({{ u.id }},{{ u.enabled }})">{{ 'Disable' if u.enabled else 'Enable' }}</button>
+                <button class="btn btn-secondary btn-sm" onclick="setVpnUserPassword({{ u.id }},'{{ u.username }}')">Password</button>
+                <button class="btn btn-secondary btn-sm" onclick="enableUserMFA({{ u.id }},'{{ u.username }}')">MFA</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteVPNUser({{ u.id }})">✕</button>
+              </div>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="9" style="text-align:center;padding:30px" class="text-muted">No VPN users. Click "+ Add User" to create one.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- IPSEC SA TAB -->
+<div id="tab-ipsec-sa" class="hidden">
+  <div class="card">
+    <div class="card-header"><div class="card-title">Active IPSec Security Associations</div>
+      <button class="btn btn-secondary btn-sm" onclick="refreshSA()">Refresh</button></div>
+    <div class="table-wrap">
+      <table><thead><tr><th>Local Address</th><th>Remote Address</th><th>State</th></tr></thead>
+      <tbody id="sa-tbody">
+        {% for sa in ipsec_sa %}
+        <tr><td class="font-mono">{{ sa.LocalAddress or '' }}</td><td class="font-mono">{{ sa.RemoteAddress or '' }}</td><td>{{ sa.State or '' }}</td></tr>
+        {% else %}
+        <tr><td colspan="3" class="text-muted" style="text-align:center;padding:20px">No active SAs</td></tr>
+        {% endfor %}
+      </tbody></table>
+    </div>
+  </div>
+</div>
+
+<!-- MODALS -->
+
+<!-- BOV Modal -->
+<div class="modal-overlay" id="bov-modal">
+  <div class="modal" style="width:660px;max-width:96vw">
+    <div class="modal-header"><span class="modal-title">New Branch Office VPN Tunnel</span>
+      <button class="modal-close" onclick="closeModal('bov-modal')">✕</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Name *</label>
+          <input class="form-control" id="bov-name" placeholder="e.g. Branch-Athens"></div>
+        <div class="form-group"><label class="form-label">Protocol *</label>
+          <select class="form-control" id="bov-type" onchange="onBOVTypeChange()">
+            <option>IKEv2</option><option>IKEv1</option><option>L2TP-IPSec</option>
+            <option>SSL-OpenVPN</option><option>WireGuard</option><option>GRE</option>
+          </select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Remote Gateway *</label>
+          <input class="form-control" id="bov-remote-gw" placeholder="203.0.113.1"></div>
+        <div class="form-group"><label class="form-label">Local Gateway</label>
+          <input class="form-control" id="bov-local-gw" placeholder="auto-detect if blank"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Local Subnets</label>
+          <input class="form-control" id="bov-local-subnets" placeholder="192.168.1.0/24"></div>
+        <div class="form-group"><label class="form-label">Remote Subnets *</label>
+          <input class="form-control" id="bov-remote-subnets" placeholder="172.16.0.0/24"></div>
+      </div>
+
+      <!-- IPSec Phase 1 & 2 -->
+      <div id="bov-ipsec-section">
+        <div style="font-size:12px;font-weight:700;color:var(--text-muted);margin:14px 0 8px;border-top:1px solid var(--border);padding-top:12px">PHASE 1 — IKE</div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Pre-Shared Key</label>
+            <div style="display:flex;gap:6px">
+              <input class="form-control font-mono" id="bov-psk" type="password" placeholder="PSK">
+              <button class="btn btn-secondary btn-sm" onclick="genPSK()">Generate</button>
+            </div></div>
+          <div class="form-group"><label class="form-label">Encryption</label>
+            <select class="form-control" id="bov-ike-cipher"><option>AES256</option><option>AES128</option><option>3DES</option></select></div>
+          <div class="form-group"><label class="form-label">Hash</label>
+            <select class="form-control" id="bov-ike-hash"><option>SHA256</option><option>SHA384</option><option>SHA512</option><option>SHA1</option></select></div>
+          <div class="form-group"><label class="form-label">DH Group</label>
+            <select class="form-control" id="bov-ike-dh"><option>DH14</option><option>DH15</option><option>DH16</option><option>DH19</option><option>DH20</option></select></div>
+        </div>
+        <div style="font-size:12px;font-weight:700;color:var(--text-muted);margin:10px 0 8px">PHASE 2 — ESP</div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Encryption</label>
+            <select class="form-control" id="bov-esp-cipher"><option>AES256</option><option>AES128</option><option>3DES</option></select></div>
+          <div class="form-group"><label class="form-label">Hash</label>
+            <select class="form-control" id="bov-esp-hash"><option>SHA256</option><option>SHA384</option><option>SHA512</option></select></div>
+          <div class="form-group"><label class="form-label">PFS Group</label>
+            <select class="form-control" id="bov-pfs"><option>DH14</option><option>DH15</option><option>DH16</option><option>None</option></select></div>
+          <div class="form-group"><label class="form-label">IKE Lifetime (s)</label>
+            <input class="form-control" id="bov-ike-lifetime" type="number" value="28800"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">ESP Lifetime (s)</label>
+            <input class="form-control" id="bov-esp-lifetime" type="number" value="3600"></div>
+          <div class="form-group"><label class="form-label">DPD Interval (s)</label>
+            <input class="form-control" id="bov-dpd-interval" type="number" value="30"></div>
+          <div class="form-group" style="display:flex;align-items:flex-end">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="bov-nat" checked> NAT-T</label></div>
+          <div class="form-group" style="display:flex;align-items:flex-end">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="bov-aggressive"> Aggressive Mode</label></div>
+        </div>
+      </div>
+
+      <!-- WireGuard -->
+      <div id="bov-wg-section" class="hidden">
+        <div style="font-size:12px;font-weight:700;color:var(--text-muted);margin:14px 0 8px;border-top:1px solid var(--border);padding-top:12px">WireGuard</div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Local Private Key</label>
+            <div style="display:flex;gap:6px">
+              <input class="form-control font-mono" id="bov-wg-priv" placeholder="base64">
+              <button class="btn btn-secondary btn-sm" onclick="genWGKeys()">Generate</button>
+            </div></div>
+          <div class="form-group"><label class="form-label">Local Public Key (share with peer)</label>
+            <input class="form-control font-mono" id="bov-wg-pub" readonly></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Peer Public Key *</label>
+            <input class="form-control font-mono" id="bov-wg-peer-pub" placeholder="Remote peer public key"></div>
+          <div class="form-group"><label class="form-label">Preshared Key (optional)</label>
+            <div style="display:flex;gap:6px"><input class="form-control font-mono" id="bov-wg-psk">
+            <button class="btn btn-secondary btn-sm" onclick="genWGPSK()">Gen</button></div></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Listen Port</label>
+            <input class="form-control" id="bov-wg-port" type="number" value="51820"></div>
+          <div class="form-group"><label class="form-label">Keepalive (s)</label>
+            <input class="form-control" id="bov-wg-keepalive" type="number" value="25"></div>
+        </div>
+      </div>
+
+      <!-- SSL -->
+      <div id="bov-ssl-section" class="hidden">
+        <div style="font-size:12px;font-weight:700;color:var(--text-muted);margin:14px 0 8px;border-top:1px solid var(--border);padding-top:12px">SSL/OpenVPN</div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Port</label>
+            <input class="form-control" id="bov-ssl-port" type="number" value="1194"></div>
+          <div class="form-group"><label class="form-label">Protocol</label>
+            <select class="form-control" id="bov-ssl-proto"><option>udp</option><option>tcp</option></select></div>
+          <div class="form-group"><label class="form-label">Cipher</label>
+            <select class="form-control" id="bov-ssl-cipher"><option>AES-256-GCM</option><option>AES-128-GCM</option><option>AES-256-CBC</option></select></div>
+        </div>
+        <div class="form-group"><label class="form-label">CA Certificate (PEM)</label>
+          <textarea class="form-control font-mono" id="bov-ssl-ca" rows="3" placeholder="-----BEGIN CERTIFICATE-----"></textarea></div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Client Certificate</label>
+            <textarea class="form-control font-mono" id="bov-ssl-cert" rows="3"></textarea></div>
+          <div class="form-group"><label class="form-label">Client Key</label>
+            <textarea class="form-control font-mono" id="bov-ssl-key" rows="3"></textarea></div>
+        </div>
+      </div>
+
+      <div class="form-group" style="margin-top:12px">
+        <label class="form-label">Description</label>
+        <input class="form-control" id="bov-desc" placeholder="Optional notes"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('bov-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveBOV()">Save Tunnel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Profile -->
+<div class="modal-overlay" id="profile-modal">
+  <div class="modal">
+    <div class="modal-header"><span class="modal-title">Add VPN Profile</span>
+      <button class="modal-close" onclick="closeModal('profile-modal')">✕</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label class="form-label">Name *</label><input class="form-control" id="p-name" placeholder="Office VPN"></div>
+      <div class="form-group"><label class="form-label">Type</label>
+        <select class="form-control" id="p-type"><option>OpenVPN</option><option>WireGuard</option></select></div>
+      <div class="form-group"><label class="form-label">Config File Path *</label>
+        <input class="form-control" id="p-config" placeholder="/etc/vpn/client.ovpn"></div>
+      <div class="form-group"><label class="form-label">Server (display only)</label>
+        <input class="form-control" id="p-server" placeholder="vpn.company.com:1194"></div>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="p-auto"> Auto-connect on startup</label>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('profile-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveProfile()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- VPN User -->
+<div class="modal-overlay" id="vpnuser-modal">
+  <div class="modal">
+    <div class="modal-header"><span class="modal-title">Add VPN User</span>
+      <button class="modal-close" onclick="closeModal('vpnuser-modal')">✕</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Username *</label><input class="form-control" id="vu-username" placeholder="john.doe"></div>
+        <div class="form-group"><label class="form-label">Password *</label><input class="form-control" id="vu-password" type="password"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Full Name</label><input class="form-control" id="vu-fullname"></div>
+        <div class="form-group"><label class="form-label">Email</label><input class="form-control" id="vu-email" type="email"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Group</label>
+          <select class="form-control" id="vu-group">
+            <option>vpn-users</option><option>vpn-admins</option><option>branch-office</option><option>contractors</option>
+          </select></div>
+        <div class="form-group"><label class="form-label">Static Tunnel IP (blank=dynamic)</label>
+          <input class="form-control" id="vu-ip" placeholder="10.8.0.10"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Max Connections</label><input class="form-control" id="vu-maxconn" type="number" value="1"></div>
+        <div class="form-group"><label class="form-label">Bandwidth kbps (0=unlimited)</label><input class="form-control" id="vu-bw" type="number" value="0"></div>
+        <div class="form-group"><label class="form-label">Expires (blank=never)</label><input class="form-control" id="vu-expires" type="date"></div>
+      </div>
+      <div class="form-group"><label class="form-label">Allowed Networks (blank=all)</label>
+        <input class="form-control" id="vu-networks" placeholder="192.168.1.0/24,10.0.0.0/8"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('vpnuser-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveVPNUser()">Create User</button>
+    </div>
+  </div>
+</div>
+
+<!-- WG Generator -->
+<div class="modal-overlay" id="wg-gen-modal">
+  <div class="modal">
+    <div class="modal-header"><span class="modal-title">WireGuard Key Generator</span>
+      <button class="modal-close" onclick="closeModal('wg-gen-modal')">✕</button></div>
+    <div class="modal-body">
+      <button class="btn btn-primary" onclick="generateWGKeys()" style="margin-bottom:14px">Generate New Keypair</button>
+      <div class="form-group"><label class="form-label">Private Key</label>
+        <div style="display:flex;gap:6px"><input class="form-control font-mono" id="wg-gen-priv" readonly>
+        <button class="btn btn-secondary btn-sm" onclick="copyText(document.getElementById('wg-gen-priv').value)">Copy</button></div></div>
+      <div class="form-group"><label class="form-label">Public Key</label>
+        <div style="display:flex;gap:6px"><input class="form-control font-mono" id="wg-gen-pub" readonly>
+        <button class="btn btn-secondary btn-sm" onclick="copyText(document.getElementById('wg-gen-pub').value)">Copy</button></div></div>
+      <div class="form-group"><label class="form-label">Preshared Key</label>
+        <div style="display:flex;gap:6px"><input class="form-control font-mono" id="wg-gen-psk" readonly>
+        <button class="btn btn-secondary btn-sm" onclick="copyText(document.getElementById('wg-gen-psk').value)">Copy</button></div></div>
+    </div>
+    <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('wg-gen-modal')">Close</button></div>
+  </div>
+</div>
+
+<!-- OpenVPN PKI -->
+<div class="modal-overlay" id="ovpn-pki-modal">
+  <div class="modal">
+    <div class="modal-header"><span class="modal-title">OpenVPN PKI Generator</span>
+      <button class="modal-close" onclick="closeModal('ovpn-pki-modal')">✕</button></div>
+    <div class="modal-body">
+      <div class="alert alert-info">Generates CA + server + client certificates via OpenSSL. Requires openssl installed.</div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Output Directory</label><input class="form-control" id="pki-dir" value="/etc/aegisguard/pki"></div>
+        <div class="form-group"><label class="form-label">Server Name</label><input class="form-control" id="pki-server" value="server"></div>
+        <div class="form-group"><label class="form-label">Client Name</label><input class="form-control" id="pki-client" value="client1"></div>
+      </div>
+      <div id="pki-output" class="font-mono" style="background:#0d1117;border:1px solid var(--border);border-radius:4px;padding:12px;min-height:60px;font-size:11px;color:var(--text-muted);white-space:pre-wrap">Output will appear here...</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('ovpn-pki-modal')">Close</button>
+      <button class="btn btn-primary" onclick="generatePKI()">Generate PKI</button>
+    </div>
+  </div>
+</div>
+
+<!-- MFA -->
+<div class="modal-overlay" id="mfa-modal">
+  <div class="modal">
+    <div class="modal-header"><span class="modal-title">Enable MFA for VPN User</span>
+      <button class="modal-close" onclick="closeModal('mfa-modal')">✕</button></div>
+    <div class="modal-body">
+      <div class="alert alert-info">Add the secret to Google Authenticator, Authy, or any TOTP app.</div>
+      <div class="form-group"><label class="form-label">TOTP Secret</label>
+        <div style="display:flex;gap:6px"><input class="form-control font-mono" id="mfa-secret" readonly>
+        <button class="btn btn-secondary btn-sm" onclick="copyText(document.getElementById('mfa-secret').value)">Copy</button></div></div>
+      <div class="form-group"><label class="form-label">OTP Auth URI</label>
+        <textarea class="form-control font-mono" id="mfa-uri" rows="3" readonly></textarea></div>
+    </div>
+    <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('mfa-modal')">Close</button></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function switchTab(id) {
+  ['ssl','bov','mobile','users','ipsec-sa'].forEach(t => {
+    document.getElementById('tab-' + t).classList.add('hidden');
+    const b = document.getElementById('tab-btn-' + t);
+    if (b) { b.style.background = ''; b.style.color = ''; }
+  });
+  document.getElementById('tab-' + id).classList.remove('hidden');
+  const ab = document.getElementById('tab-btn-' + id);
+  if (ab) { ab.style.background = 'var(--bg-card)'; ab.style.color = '#fff'; }
+}
+
+function onBOVTypeChange() {
+  const t = document.getElementById('bov-type').value;
+  document.getElementById('bov-ipsec-section').classList.toggle('hidden', !['IKEv2','IKEv1','L2TP-IPSec'].includes(t));
+  document.getElementById('bov-wg-section').classList.toggle('hidden', t !== 'WireGuard');
+  document.getElementById('bov-ssl-section').classList.toggle('hidden', t !== 'SSL-OpenVPN');
+}
+
+async function initSSLVPN() {
+  const btn = event.target; btn.textContent = 'Generating PKI...'; btn.disabled = true;
+  try {
+    const r = await POST('/api/vpn/ssl/setup', {
+      port: parseInt(document.getElementById('ssl-port').value)||1194,
+      proto: document.getElementById('ssl-proto').value,
+      server_subnet: document.getElementById('ssl-subnet').value,
+      dns1: document.getElementById('ssl-dns1').value,
+      dns_domain: document.getElementById('ssl-dns-domain').value,
+    });
+    toast(r.message||'Done', r.status==='ok'?'success':'error');
+    if (r.status==='ok') setTimeout(() => location.reload(), 1500);
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+  finally { btn.textContent = 'Auto Setup SSL VPN'; btn.disabled = false; }
+}
+
+async function saveSSLConfig() {
+  await POST('/api/vpn/ssl/config', {
+    port: parseInt(document.getElementById('ssl-port').value),
+    protocol: document.getElementById('ssl-proto').value,
+    server_subnet: document.getElementById('ssl-subnet').value,
+    dns1: document.getElementById('ssl-dns1').value,
+    dns_domain: document.getElementById('ssl-dns-domain').value,
+    cipher: document.getElementById('ssl-cipher').value,
+    auth: document.getElementById('ssl-auth').value,
+    tls_version: document.getElementById('ssl-tls').value,
+    redirect_gateway: document.getElementById('ssl-redirect').checked ? 1 : 0,
+  });
+  toast('Config saved & VPN restarted', 'success');
+}
+// ── Public IP + OpenVPN Server ─────────────────────────────────────────────
+function _handleExpired() {
+  toast('Session expired — redirecting to login...', 'error');
+  setTimeout(() => { window.location.href = '/login'; }, 1500);
+}
+
+async function safeGet(url) {
+  try {
+    const r = await fetch(url, {credentials: 'same-origin'});
+    if (r.status === 401) { _handleExpired(); return null; }
+    if (!r.ok) return null;
+    const ct = r.headers.get('content-type') || '';
+    if (!ct.includes('json')) return null;
+    return await r.json();
+  } catch(e) { return null; }
+}
+
+async function safePost(url, data) {
+  try {
+    const r = await fetch(url, {
+      method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: data ? JSON.stringify(data) : null
+    });
+    if (r.status === 401) { _handleExpired(); return {status:'error', message:'Session expired'}; }
+    if (!r.ok) {
+      let msg = 'Server error ' + r.status;
+      try { const j = await r.json(); msg = j.detail || j.message || msg; } catch(e2) {}
+      return {status: 'error', message: msg};
+    }
+    const ct = r.headers.get('content-type') || '';
+    if (!ct.includes('json')) return {status: 'error', message: 'Unexpected response'};
+    return await r.json();
+  } catch(e) { return {status: 'error', message: e.message}; }
+}
+
+function setOvpnBadge(active, statusText) {
+  const badge = document.getElementById('ovpn-server-badge');
+  if (!badge) return;
+  badge.className = active ? 'badge badge-allow' : 'badge badge-disabled';
+  badge.textContent = active ? 'Running' : (statusText || 'Stopped');
+  const startBtn = document.getElementById('ovpn-start-btn');
+  const stopBtn  = document.getElementById('ovpn-stop-btn');
+  if (startBtn) startBtn.disabled = active;
+  if (stopBtn)  stopBtn.disabled  = !active;
+}
+
+async function loadPublicIPState() {
+  const ipData = await safeGet('/api/vpn/openvpn/public-ip');
+  if (ipData && ipData.public_ip) {
+    const inp = document.getElementById('public-ip-input');
+    if (inp && !inp.value) inp.value = ipData.public_ip;
+  }
+  const s = await safeGet('/api/vpn/openvpn/server/status');
+  if (s) {
+    setOvpnBadge(s.active, s.status);
+    const det = document.getElementById('ovpn-details');
+    if (det && s.details) {
+      const line = (s.details.split('\n').find(l => l.includes('Active:')) || '').trim();
+      det.textContent = line;
+    }
+  } else {
+    setOvpnBadge(false, 'Unknown');
+  }
+}
+
+async function detectPublicIP() {
+  const statusEl = document.getElementById('public-ip-status');
+  statusEl.textContent = 'Detecting...';
+  statusEl.style.color = 'var(--text-muted)';
+  const r = await safeGet('/api/vpn/openvpn/detect-ip');
+  if (r && r.public_ip) {
+    document.getElementById('public-ip-input').value = r.public_ip;
+    statusEl.textContent = 'Detected: ' + r.public_ip;
+    statusEl.style.color = 'var(--green)';
+  } else {
+    statusEl.textContent = 'Detection failed — enter IP manually';
+    statusEl.style.color = 'var(--danger)';
+  }
+}
+
+async function savePublicIP() {
+  const ip = document.getElementById('public-ip-input').value.trim();
+  if (!ip) { toast('Enter an IP address first', 'error'); return; }
+  const statusEl = document.getElementById('public-ip-status');
+  const r = await safePost('/api/vpn/openvpn/public-ip', {public_ip: ip});
+  if (r && r.status === 'ok') {
+    toast('Public IP saved: ' + ip, 'success');
+    statusEl.textContent = 'Saved!';
+    statusEl.style.color = 'var(--green)';
+  } else {
+    toast('Error saving IP: ' + (r && r.message || 'unknown'), 'error');
+  }
+}
+
+async function startOpenVPN() {
+  const btn = document.getElementById('ovpn-start-btn');
+  btn.disabled = true; btn.textContent = 'Starting...';
+  const r = await safePost('/api/vpn/openvpn/server/start');
+  if (r && r.status === 'ok') {
+    toast(r.message || 'OpenVPN server started', 'success');
+  } else {
+    toast((r && r.message) || 'Failed to start OpenVPN', 'error');
+  }
+  setTimeout(() => {
+    btn.textContent = '▶ Start OpenVPN Server';
+    loadPublicIPState();
+  }, 2000);
+}
+
+async function stopOpenVPN() {
+  const btn = document.getElementById('ovpn-stop-btn');
+  btn.disabled = true; btn.textContent = 'Stopping...';
+  const r = await safePost('/api/vpn/openvpn/server/stop');
+  toast((r && r.message) || 'OpenVPN server stopped', 'info');
+  setTimeout(() => {
+    btn.textContent = '■ Stop OpenVPN Server';
+    loadPublicIPState();
+  }, 2000);
+}
+
+// Load on page open
+document.addEventListener('DOMContentLoaded', () => { loadPublicIPState(); loadSSLRoutes(); });
+
+async function startSSLVPN() { const r = await POST('/api/vpn/ssl/start'); toast(r.message, r.status==='ok'?'success':'error'); }
+async function stopSSLVPN() { const r = await POST('/api/vpn/ssl/stop'); toast(r.message, 'info'); }
+async function refreshSSLClients() {
+  const c = await GET('/api/vpn/ssl/clients');
+  const tbody = document.getElementById('ssl-clients');
+  if (!c||!c.length) { tbody.innerHTML='<tr><td colspan="5" class="text-muted" style="text-align:center;padding:16px">No connected clients</td></tr>'; return; }
+  tbody.innerHTML = c.map(x => `<tr><td>${x.username}</td><td class="font-mono">${x.real_ip}</td><td>${x.bytes_recv}</td><td>${x.bytes_sent}</td><td>${x.connected_since}</td></tr>`).join('');
+}
+
+async function loadSSLRoutes() {
+  const routes = await GET('/api/vpn/ssl/routes');
+  const tbody = document.getElementById('ssl-routes-body');
+  if (!routes || !routes.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="text-muted" style="text-align:center;padding:16px">No routes configured</td></tr>';
+    return;
+  }
+  tbody.innerHTML = routes.map(r => `
+    <tr id="ssl-route-${r.id}">
+      <td class="font-mono">${r.network}</td>
+      <td class="font-mono">${r.netmask}</td>
+      <td>${r.description || ''}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="delSSLRoute(${r.id})">Delete</button></td>
+    </tr>`).join('');
+}
+
+async function addSSLRoute() {
+  const network = document.getElementById('route-network').value.trim();
+  const netmask = document.getElementById('route-netmask').value.trim();
+  const description = document.getElementById('route-desc').value.trim();
+  if (!network || !netmask) { toast('Network and netmask are required', 'error'); return; }
+  const r = await POST('/api/vpn/ssl/routes', { network, netmask, description });
+  if (r.status === 'ok') {
+    document.getElementById('route-network').value = '';
+    document.getElementById('route-netmask').value = '';
+    document.getElementById('route-desc').value = '';
+    toast('Route added. Reconnect VPN to receive the new route.', 'success');
+    loadSSLRoutes();
+  }
+}
+
+async function delSSLRoute(id) {
+  if (!confirm2('Delete this route?')) return;
+  await DELETE(`/api/vpn/ssl/routes/${id}`);
+  document.getElementById(`ssl-route-${id}`)?.remove();
+  toast('Route deleted. Reconnect VPN to apply.', 'success');
+}
+
+async function genPSK() { const r = await POST('/api/vpn/ipsec/psk'); document.getElementById('bov-psk').value = r.psk; }
+async function genWGKeys() { const r = await POST('/api/vpn/wireguard/keygen'); document.getElementById('bov-wg-priv').value=r.private_key; document.getElementById('bov-wg-pub').value=r.public_key; document.getElementById('bov-wg-psk').value=r.preshared_key; }
+async function genWGPSK() { const r = await POST('/api/vpn/wireguard/keygen'); document.getElementById('bov-wg-psk').value = r.preshared_key; }
+
+async function saveBOV() {
+  const t = document.getElementById('bov-type').value;
+  const data = { name:document.getElementById('bov-name').value.trim(), tunnel_type:t, remote_gateway:document.getElementById('bov-remote-gw').value.trim(), local_gateway:document.getElementById('bov-local-gw').value.trim(), local_subnets:document.getElementById('bov-local-subnets').value.trim(), remote_subnets:document.getElementById('bov-remote-subnets').value.trim(), description:document.getElementById('bov-desc').value.trim() };
+  if (!data.name||!data.remote_gateway||!data.remote_subnets) { toast('Name, Remote Gateway and Remote Subnets required','error'); return; }
+  if (['IKEv2','IKEv1','L2TP-IPSec'].includes(t)) Object.assign(data, {psk:document.getElementById('bov-psk').value,ike_version:t.startsWith('IKEv1')?'IKEv1':'IKEv2',ike_cipher:document.getElementById('bov-ike-cipher').value,ike_hash:document.getElementById('bov-ike-hash').value,ike_dh:document.getElementById('bov-ike-dh').value,ike_lifetime:parseInt(document.getElementById('bov-ike-lifetime').value),esp_cipher:document.getElementById('bov-esp-cipher').value,esp_hash:document.getElementById('bov-esp-hash').value,pfs_group:document.getElementById('bov-pfs').value,esp_lifetime:parseInt(document.getElementById('bov-esp-lifetime').value),dpd_interval:parseInt(document.getElementById('bov-dpd-interval').value),nat_traversal:document.getElementById('bov-nat').checked?1:0,aggressive_mode:document.getElementById('bov-aggressive').checked?1:0});
+  if (t==='WireGuard') Object.assign(data, {wg_private_key:document.getElementById('bov-wg-priv').value,wg_public_key:document.getElementById('bov-wg-pub').value,wg_peer_pubkey:document.getElementById('bov-wg-peer-pub').value,wg_preshared_key:document.getElementById('bov-wg-psk').value,wg_port:parseInt(document.getElementById('bov-wg-port').value),wg_keepalive:parseInt(document.getElementById('bov-wg-keepalive').value)});
+  if (t==='SSL-OpenVPN') Object.assign(data, {ssl_port:parseInt(document.getElementById('bov-ssl-port').value),ssl_protocol:document.getElementById('bov-ssl-proto').value,ssl_cipher:document.getElementById('bov-ssl-cipher').value,ssl_ca_cert:document.getElementById('bov-ssl-ca').value,ssl_cert:document.getElementById('bov-ssl-cert').value,ssl_key:document.getElementById('bov-ssl-key').value});
+  try { await POST('/api/vpn/bov', data); toast('Tunnel saved','success'); closeModal('bov-modal'); setTimeout(()=>location.reload(),600); } catch(e) { toast('Error: '+e.message,'error'); }
+}
+
+async function connectBOV(id) { const r = await POST(`/api/vpn/bov/${id}/connect`); toast(r.message, r.status==='ok'?'success':'error'); }
+async function disconnectBOV(id) { const r = await POST(`/api/vpn/bov/${id}/disconnect`); toast(r.message,'info'); }
+async function deleteBOV(id) { if (!confirm2('Delete tunnel?')) return; await DELETE(`/api/vpn/bov/${id}`); document.getElementById(`bov-${id}`)?.remove(); toast('Deleted','success'); }
+async function applyIPSec() { const r = await POST('/api/vpn/bov/apply-ipsec'); toast(r.message, r.status==='ok'?'success':'error'); }
+async function refreshIPSecStatus() { const r = await GET('/api/vpn/bov/ipsec-status'); document.getElementById('ipsec-status').textContent = r.output||'ipsec not available'; }
+
+async function connectProfile(id) { const r = await POST(`/api/vpn/${id}/connect`); toast(r.message, r.status==='ok'?'success':'error'); }
+async function disconnectProfile(id) { const r = await POST(`/api/vpn/${id}/disconnect`); toast(r.message,'info'); }
+async function deleteProfile(id) { if (!confirm2('Delete?')) return; await DELETE(`/api/vpn/profiles/${id}`); location.reload(); }
+async function saveProfile() { await POST('/api/vpn/profiles',{name:document.getElementById('p-name').value,vpn_type:document.getElementById('p-type').value,config_path:document.getElementById('p-config').value,server:document.getElementById('p-server').value,auto_connect:document.getElementById('p-auto').checked?1:0}); toast('Saved','success'); closeModal('profile-modal'); setTimeout(()=>location.reload(),500); }
+
+async function saveVPNUser() {
+  const data = {username:document.getElementById('vu-username').value.trim(),password:document.getElementById('vu-password').value,full_name:document.getElementById('vu-fullname').value.trim(),email:document.getElementById('vu-email').value.trim(),group_name:document.getElementById('vu-group').value,tunnel_ip:document.getElementById('vu-ip').value.trim(),max_connections:parseInt(document.getElementById('vu-maxconn').value)||1,bandwidth_limit:parseInt(document.getElementById('vu-bw').value)||0,allowed_networks:document.getElementById('vu-networks').value.trim(),expires_at:document.getElementById('vu-expires').value};
+  if (!data.username||!data.password) { toast('Username and password required','error'); return; }
+  try { await POST('/api/vpn/users',data); toast(`User ${data.username} created`,'success'); closeModal('vpnuser-modal'); setTimeout(()=>location.reload(),600); } catch(e) { toast('Error: '+e.message,'error'); }
+}
+async function downloadUserConfig(id,u) { window.open(`/api/vpn/users/${id}/config`,'_blank'); }
+async function toggleVPNUser(id,en) { await POST(`/api/vpn/users/${id}/toggle`); toast(en?'Disabled':'Enabled','success'); setTimeout(()=>location.reload(),400); }
+async function deleteVPNUser(id) { if (!confirm2('Delete VPN user?')) return; await DELETE(`/api/vpn/users/${id}`); document.getElementById(`vuser-${id}`)?.remove(); toast('Deleted','success'); }
+async function setVpnUserPassword(id,username) {
+  const pw = prompt(`New password for ${username}:`);
+  if (!pw) return;
+  try { await PUT(`/api/vpn/users/${id}/password`,{password:pw}); toast('Password updated','success'); } catch(e) { toast('Error: '+e.message,'error'); }
+}
+async function enableUserMFA(id,u) { const r = await POST(`/api/auth/users/${id}/mfa/enable`); document.getElementById('mfa-secret').value=r.secret||''; document.getElementById('mfa-uri').value=r.qr_uri||''; openModal('mfa-modal'); }
+
+async function generateWGKeys() { const r = await POST('/api/vpn/wireguard/keygen'); document.getElementById('wg-gen-priv').value=r.private_key; document.getElementById('wg-gen-pub').value=r.public_key; document.getElementById('wg-gen-psk').value=r.preshared_key; }
+async function generatePKI() {
+  const out = document.getElementById('pki-output'); out.textContent = 'Generating... (1-2 min)';
+  try { const r = await POST('/api/vpn/openvpn/pki/generate',{output_dir:document.getElementById('pki-dir').value,server_name:document.getElementById('pki-server').value,client_name:document.getElementById('pki-client').value}); out.textContent=(r.success?'PKI OK!\n\n':'FAILED:\n\n')+r.steps.map(s=>`${s[1]?'OK':'FAIL'} ${s[0]}: ${s[2]||''}`).join('\n'); } catch(e) { out.textContent='Error: '+e.message; }
+}
+async function refreshSA() {
+  const s = await GET('/api/vpn/ipsec/sa');
+  const tbody = document.getElementById('sa-tbody');
+  if (!s||!s.length) { tbody.innerHTML='<tr><td colspan="3" class="text-muted" style="text-align:center;padding:20px">No active SAs</td></tr>'; return; }
+  tbody.innerHTML = s.map(x=>`<tr><td class="font-mono">${x.LocalAddress||''}</td><td class="font-mono">${x.RemoteAddress||''}</td><td>${x.State||''}</td></tr>`).join('');
+}
+</script>
+{% endblock %}

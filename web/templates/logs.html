@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+{% block title %}Logs & Reports{% endblock %}
+{% block page_title %}Logs & Reports{% endblock %}
+{% set active = "logs" %}
+
+{% block content %}
+
+<!-- Blocked IPs Summary (visible only when there are BLOCK/THREAT entries) -->
+{% set blocked_logs = logs | selectattr('action', 'in', ['BLOCK', 'DROP', 'THREAT']) | list %}
+{% if blocked_logs %}
+<div class="card" style="margin-bottom:12px;border-left:3px solid var(--danger)">
+  <div class="card-header">
+    <div>
+      <div class="card-title" style="color:var(--danger)">Blocked / Threat IPs</div>
+      <div class="card-sub">{{ blocked_logs|length }} block/threat event(s) in current view</div>
+    </div>
+    <a href="/logs?action=BLOCK&limit=500" class="btn btn-secondary btn-sm">View All Blocks</a>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:8px;padding:0 12px 12px">
+    {% set ns = namespace(seen=[]) %}
+    {% for log in blocked_logs %}
+      {% if log.src_ip and log.src_ip not in ns.seen %}
+        {% set _ = ns.seen.append(log.src_ip) %}
+        <span style="background:rgba(231,76,60,0.12);border:1px solid rgba(231,76,60,0.3);border-radius:4px;padding:3px 10px;font-family:monospace;font-size:12px;cursor:pointer"
+              onclick="document.getElementById('search-input').value='{{ log.src_ip }}';document.getElementById('search-input').dispatchEvent(new Event('input'))">
+          {{ log.src_ip }}
+        </span>
+      {% endif %}
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<!-- Filter Bar -->
+<div class="card" style="margin-bottom:12px">
+  <form method="get" action="/logs" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+    <div class="form-group" style="margin-bottom:0;flex:1;min-width:160px">
+      <label class="form-label">Search</label>
+      <input class="form-control" name="search" value="{{ search or '' }}" placeholder="IP, port, rule...">
+    </div>
+    <div class="form-group" style="margin-bottom:0">
+      <label class="form-label">Action</label>
+      <select class="form-control" name="action" style="min-width:130px">
+        <option value="">All Actions</option>
+        <option value="ALLOW"  {{ 'selected' if action=='ALLOW' }}>ALLOW</option>
+        <option value="BLOCK"  {{ 'selected' if action=='BLOCK' }}>BLOCK</option>
+        <option value="DROP"   {{ 'selected' if action=='DROP' }}>DROP</option>
+        <option value="THREAT" {{ 'selected' if action=='THREAT' }}>THREAT</option>
+        <option value="INFO"   {{ 'selected' if action=='INFO' }}>INFO</option>
+        <option value="WARN"   {{ 'selected' if action=='WARN' }}>WARN</option>
+      </select>
+    </div>
+    <div class="form-group" style="margin-bottom:0">
+      <label class="form-label">Limit</label>
+      <select class="form-control" name="limit" style="min-width:100px">
+        <option value="100"  {{ 'selected' if limit==100 }}>100</option>
+        <option value="250"  {{ 'selected' if limit==250 }}>250</option>
+        <option value="500"  {{ 'selected' if limit==500 }}>500</option>
+        <option value="1000" {{ 'selected' if limit==1000 }}>1000</option>
+      </select>
+    </div>
+    <div style="display:flex;gap:8px;align-items:flex-end">
+      <button type="submit" class="btn btn-primary">Apply</button>
+      <a href="/logs" class="btn btn-secondary">Reset</a>
+    </div>
+  </form>
+
+  <!-- Quick filters -->
+  <div style="padding:8px 12px 0;display:flex;gap:6px;flex-wrap:wrap">
+    <span class="text-muted" style="font-size:11px;align-self:center">Quick:</span>
+    <a href="/logs?action=BLOCK&limit=250" class="btn btn-sm" style="background:rgba(231,76,60,0.15);color:var(--danger);border:1px solid rgba(231,76,60,0.3)">Blocked IPs</a>
+    <a href="/logs?action=THREAT&limit=250" class="btn btn-sm" style="background:rgba(231,76,60,0.15);color:var(--danger);border:1px solid rgba(231,76,60,0.3)">Threats</a>
+    <a href="/logs?action=DROP&limit=250" class="btn btn-sm" style="background:rgba(243,156,18,0.15);color:var(--warning);border:1px solid rgba(243,156,18,0.3)">Dropped</a>
+    <a href="/logs?action=WARN&limit=250" class="btn btn-sm" style="background:rgba(243,156,18,0.15);color:var(--warning);border:1px solid rgba(243,156,18,0.3)">Warnings</a>
+    <a href="/logs?limit=500" class="btn btn-secondary btn-sm">All (500)</a>
+  </div>
+</div>
+
+<!-- Log Table -->
+<div class="card">
+  <div class="card-header">
+    <div>
+      <div class="card-title">Security Log</div>
+      <div class="card-sub">
+        Showing {{ logs|length }} entries
+        {% if action %} · Action: <strong>{{ action }}</strong>{% endif %}
+        {% if search %} · Search: <strong>{{ search }}</strong>{% endif %}
+      </div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-secondary btn-sm" onclick="exportLogs()">Export CSV</button>
+      <button class="btn btn-danger btn-sm" onclick="clearLogs()">Clear Logs</button>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <input id="search-input" class="form-control" style="max-width:260px" placeholder="Filter visible rows...">
+    <div class="toolbar-right">
+      <span class="text-muted" style="font-size:12px">
+        <span id="visible-count">{{ logs|length }}</span> / {{ logs|length }} rows
+      </span>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table id="main-table">
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Action</th>
+          <th>Protocol</th>
+          <th>Source IP</th>
+          <th>Src Port</th>
+          <th>Dest IP</th>
+          <th>Dst Port</th>
+          <th>Rule / Process</th>
+          <th>Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for log in logs %}
+        <tr style="{{ 'background:rgba(231,76,60,0.06)' if log.action in ('BLOCK','DROP','THREAT') else '' }}">
+          <td class="font-mono text-muted" style="white-space:nowrap">
+            {{ log.timestamp[:19]|replace('T',' ') if log.timestamp else '—' }}
+          </td>
+          <td>
+            {% if log.action == 'ALLOW' %}
+              <span class="badge badge-allow">ALLOW</span>
+            {% elif log.action in ('BLOCK', 'DROP') %}
+              <span class="badge badge-block">{{ log.action }}</span>
+            {% elif log.action == 'THREAT' %}
+              <span class="badge badge-critical">THREAT</span>
+            {% elif log.action == 'WARN' %}
+              <span class="badge badge-warn">WARN</span>
+            {% else %}
+              <span class="badge badge-disabled">{{ log.action or '—' }}</span>
+            {% endif %}
+          </td>
+          <td class="font-mono">{{ log.protocol or '—' }}</td>
+          <td class="font-mono" style="{{ 'color:var(--danger);font-weight:600' if log.action in ('BLOCK','DROP','THREAT') and log.src_ip else '' }}">
+            {{ log.src_ip or '—' }}
+          </td>
+          <td class="font-mono">{{ log.src_port or '—' }}</td>
+          <td class="font-mono">{{ log.dst_ip or '—' }}</td>
+          <td class="font-mono">{{ log.dst_port or '—' }}</td>
+          <td class="text-muted" style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+              title="{{ log.rule_name or log.process or '' }}">
+            {{ log.rule_name or log.process or '—' }}
+          </td>
+          <td class="text-muted" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+              title="{{ log.detail or '' }}">
+            {{ log.detail or '—' }}
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="9" class="text-muted" style="text-align:center;padding:40px">
+            No log entries found{% if action or search %} matching the current filters{% endif %}.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const input   = document.getElementById('search-input');
+  const table   = document.getElementById('main-table');
+  const countEl = document.getElementById('visible-count');
+  if (input && table) {
+    input.addEventListener('input', () => {
+      const q = input.value.toLowerCase();
+      let visible = 0;
+      table.querySelectorAll('tbody tr').forEach(row => {
+        const show = row.textContent.toLowerCase().includes(q);
+        row.style.display = show ? '' : 'none';
+        if (show) visible++;
+      });
+      if (countEl) countEl.textContent = visible;
+    });
+  }
+});
+
+async function clearLogs() {
+  if (!confirm2('Clear all log entries? This cannot be undone.')) return;
+  try {
+    await POST('/api/logs/clear');
+    toast('Logs cleared', 'success');
+    setTimeout(() => location.reload(), 600);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+function exportLogs() {
+  const table = document.getElementById('main-table');
+  const rows = Array.from(table.querySelectorAll('tr')).filter(r => r.style.display !== 'none');
+  const csv = rows.map(row =>
+    Array.from(row.querySelectorAll('th,td'))
+      .map(cell => '"' + cell.textContent.trim().replace(/"/g, '""') + '"')
+      .join(',')
+  ).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = `aegisguard-logs-${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+  toast('Log exported as CSV', 'success');
+}
+</script>
+{% endblock %}

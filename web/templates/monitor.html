@@ -1,0 +1,235 @@
+{% extends "base.html" %}
+{% block title %}Network Monitor{% endblock %}
+{% block page_title %}Network Monitor{% endblock %}
+{% set active = "monitor" %}
+
+{% block content %}
+
+<!-- Stats Row -->
+<div class="grid grid-4" style="margin-bottom:16px">
+  <div class="stat-card blue">
+    <div class="value" id="conn-count">{{ connections|length }}</div>
+    <div class="label">Active Connections</div>
+  </div>
+  <div class="stat-card green">
+    <div class="value" id="bytes-sent">—</div>
+    <div class="label">Total Sent</div>
+  </div>
+  <div class="stat-card blue">
+    <div class="value" id="bytes-recv">—</div>
+    <div class="label">Total Received</div>
+  </div>
+  <div class="stat-card">
+    <div class="value">{{ ifaces|length }}</div>
+    <div class="label">Interfaces</div>
+  </div>
+</div>
+
+<!-- Live Connections -->
+<div class="card">
+  <div class="card-header">
+    <div>
+      <div class="card-title">Live Connections</div>
+      <div class="card-sub">Auto-refreshes every 3 seconds · Showing all active network connections</div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-secondary btn-sm" onclick="refreshConnections()">Refresh Now</button>
+      <button class="btn btn-secondary btn-sm" id="pause-btn" onclick="togglePause()">Pause</button>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <input id="search-input" class="form-control" style="max-width:260px" placeholder="Search connections...">
+    <select class="form-control" id="proto-filter" onchange="filterConnections()" style="max-width:110px">
+      <option value="">All Protocols</option>
+      <option value="tcp">TCP</option>
+      <option value="udp">UDP</option>
+    </select>
+    <select class="form-control" id="status-filter" onchange="filterConnections()" style="max-width:150px">
+      <option value="">All States</option>
+      <option value="established">Established</option>
+      <option value="listen">Listen</option>
+      <option value="time_wait">Time Wait</option>
+      <option value="close_wait">Close Wait</option>
+    </select>
+  </div>
+
+  <div class="table-wrap">
+    <table id="main-table">
+      <thead>
+        <tr>
+          <th>Protocol</th>
+          <th>Local IP</th>
+          <th>Local Port</th>
+          <th>Remote IP</th>
+          <th>Remote Port</th>
+          <th>Status</th>
+          <th>Process</th>
+        </tr>
+      </thead>
+      <tbody id="conn-tbody">
+        {% for c in connections %}
+        <tr>
+          <td><span class="badge badge-{{ 'info' if c.proto == 'TCP' else 'warn' }}">{{ c.proto }}</span></td>
+          <td class="font-mono">{{ c.local_ip }}</td>
+          <td class="font-mono">{{ c.local_port }}</td>
+          <td class="font-mono">{{ c.remote_ip or '—' }}</td>
+          <td class="font-mono">{{ c.remote_port or '—' }}</td>
+          <td>
+            <span class="badge badge-{{ 'allow' if c.status == 'Established' else 'disabled' }}">{{ c.status }}</span>
+          </td>
+          <td class="text-muted">{{ c.process }}</td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="7" class="text-muted" style="text-align:center;padding:20px">No active connections detected.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Interface Statistics -->
+<div class="card">
+  <div class="card-header">
+    <div>
+      <div class="card-title">Interface Statistics</div>
+      <div class="card-sub">Per-interface network I/O counters</div>
+    </div>
+    <button class="btn btn-secondary btn-sm" onclick="refreshIfaceStats()">Refresh</button>
+  </div>
+  <div class="table-wrap">
+    <table id="iface-table">
+      <thead>
+        <tr>
+          <th>Interface</th>
+          <th>Bytes Sent</th>
+          <th>Bytes Received</th>
+          <th>Packets Sent</th>
+          <th>Packets Received</th>
+          <th>Errors In</th>
+          <th>Errors Out</th>
+          <th>Utilization</th>
+        </tr>
+      </thead>
+      <tbody id="iface-tbody">
+        {% for name, s in ifaces.items() %}
+        <tr>
+          <td>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span class="status-dot green"></span>
+              <span>{{ name }}</span>
+            </div>
+          </td>
+          <td class="font-mono">{{ (s.bytes_sent / 1048576)|round(2) }} MB</td>
+          <td class="font-mono">{{ (s.bytes_recv / 1048576)|round(2) }} MB</td>
+          <td class="font-mono">{{ s.get('packets_sent', 0) }}</td>
+          <td class="font-mono">{{ s.get('packets_recv', 0) }}</td>
+          <td class="font-mono text-muted">—</td>
+          <td class="font-mono text-muted">—</td>
+          <td>
+            <div style="display:flex;align-items:center;gap:8px">
+              <div class="progress" style="width:80px">
+                <div class="progress-bar blue" style="width:{{ [((s.bytes_sent + s.bytes_recv) / 1073741824 * 10)|round(0)|int, 100]|min }}%"></div>
+              </div>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="8" class="text-muted" style="text-align:center;padding:20px">No interface data available.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let paused = false;
+
+function togglePause() {
+  paused = !paused;
+  document.getElementById('pause-btn').textContent = paused ? 'Resume' : 'Pause';
+  document.getElementById('pause-btn').className = paused ? 'btn btn-warning btn-sm' : 'btn btn-secondary btn-sm';
+}
+
+function filterConnections() {
+  const proto = document.getElementById('proto-filter').value.toLowerCase();
+  const status = document.getElementById('status-filter').value.toLowerCase();
+  const q = (document.getElementById('search-input')?.value || '').toLowerCase();
+  document.querySelectorAll('#conn-tbody tr').forEach(row => {
+    const text = row.textContent.toLowerCase();
+    const protoMatch = !proto || text.includes(proto);
+    const statusMatch = !status || text.includes(status.replace('_',' '));
+    const searchMatch = !q || text.includes(q);
+    row.style.display = (protoMatch && statusMatch && searchMatch) ? '' : 'none';
+  });
+}
+
+const origRefreshConnections = refreshConnections;
+refreshConnections = async function() {
+  if (paused) return;
+  const tbody = document.getElementById('conn-tbody');
+  if (!tbody) return;
+  try {
+    const conns = await GET('/api/monitor/connections');
+    document.getElementById('conn-count').textContent = conns.length;
+    tbody.innerHTML = conns.length === 0
+      ? '<tr><td colspan="7" class="text-muted" style="text-align:center;padding:20px">No active connections detected.</td></tr>'
+      : conns.map(c => `
+      <tr>
+        <td><span class="badge badge-${c.proto === 'TCP' ? 'info' : 'warn'}">${c.proto}</span></td>
+        <td class="font-mono">${c.local_ip}</td>
+        <td class="font-mono">${c.local_port}</td>
+        <td class="font-mono">${c.remote_ip || '—'}</td>
+        <td class="font-mono">${c.remote_port || '—'}</td>
+        <td><span class="badge badge-${c.status === 'Established' ? 'allow' : 'disabled'}">${c.status}</span></td>
+        <td class="text-muted">${c.process}</td>
+      </tr>`).join('');
+    filterConnections();
+  } catch (e) {}
+};
+
+async function refreshIfaceStats() {
+  try {
+    const ifaces = await GET('/api/monitor/interfaces');
+    const tbody = document.getElementById('iface-tbody');
+    tbody.innerHTML = ifaces.map(s => `
+      <tr>
+        <td><div style="display:flex;align-items:center;gap:8px"><span class="status-dot green"></span>${s.name}</div></td>
+        <td class="font-mono">${fmtBytes(s.bytes_sent)}</td>
+        <td class="font-mono">${fmtBytes(s.bytes_recv)}</td>
+        <td class="font-mono">${s.packets_sent}</td>
+        <td class="font-mono">${s.packets_recv}</td>
+        <td class="font-mono ${s.errin > 0 ? 'text-danger' : 'text-muted'}">${s.errin}</td>
+        <td class="font-mono ${s.errout > 0 ? 'text-danger' : 'text-muted'}">${s.errout}</td>
+        <td><div style="display:flex;align-items:center;gap:8px"><div class="progress" style="width:80px"><div class="progress-bar blue" style="width:${Math.min(((s.bytes_sent + s.bytes_recv) / 1073741824 * 10), 100).toFixed(0)}%"></div></div></div></td>
+      </tr>`).join('');
+  } catch (e) {}
+}
+
+async function refreshNetStats() {
+  try {
+    const s = await GET('/api/monitor/stats');
+    const el = id => document.getElementById(id);
+    if (el('bytes-sent')) el('bytes-sent').textContent = s.bytes_sent_fmt || fmtBytes(s.bytes_sent);
+    if (el('bytes-recv')) el('bytes-recv').textContent = s.bytes_recv_fmt || fmtBytes(s.bytes_recv);
+  } catch (e) {}
+}
+
+// Override the search filter to also apply protocol/status filters
+document.addEventListener('DOMContentLoaded', () => {
+  const si = document.getElementById('search-input');
+  if (si) si.addEventListener('input', filterConnections);
+});
+
+setInterval(refreshNetStats, 5000);
+setInterval(refreshIfaceStats, 10000);
+refreshNetStats();
+refreshIfaceStats();
+</script>
+{% endblock %}

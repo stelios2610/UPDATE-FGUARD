@@ -1,0 +1,936 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block page_title %}Settings{% endblock %}
+{% set active = "settings" %}
+
+{% block content %}
+
+{% if not is_root %}
+<div class="alert alert-warning" style="margin-bottom:16px">
+  FGUARD UTC is not running as administrator. Some settings may not take effect without elevated privileges.
+</div>
+{% endif %}
+
+<!-- Tab Navigation -->
+<div class="toolbar" style="margin-bottom:16px;gap:0;padding:0;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;overflow:hidden;flex-wrap:wrap">
+  <button class="btn btn-secondary" id="tab-btn-general" onclick="switchTab('general')" style="border-radius:0;border:none;border-right:1px solid var(--border)">General</button>
+  <button class="btn btn-secondary" id="tab-btn-firewall" onclick="switchTab('firewall')" style="border-radius:0;border:none;border-right:1px solid var(--border)">Firewall</button>
+  <button class="btn btn-secondary" id="tab-btn-network" onclick="switchTab('network')" style="border-radius:0;border:none;border-right:1px solid var(--border)">Network</button>
+  <button class="btn btn-secondary" id="tab-btn-vpnpaths" onclick="switchTab('vpnpaths')" style="border-radius:0;border:none;border-right:1px solid var(--border)">VPN Paths</button>
+  <button class="btn btn-secondary" id="tab-btn-email" onclick="switchTab('email')" style="border-radius:0;border:none;border-right:1px solid var(--border)">Email Alerts</button>
+  <button class="btn btn-secondary" id="tab-btn-syslog" onclick="switchTab('syslog')" style="border-radius:0;border:none;border-right:1px solid var(--border)">Syslog</button>
+  <button class="btn btn-secondary" id="tab-btn-danger" onclick="switchTab('danger')" style="border-radius:0;border:none;border-right:1px solid var(--border)">Danger Zone</button>
+  <button class="btn btn-secondary" id="tab-btn-about" onclick="switchTab('about')" style="border-radius:0;border:none;border-right:1px solid var(--border)">About</button>
+  <button class="btn btn-secondary" id="tab-btn-license" onclick="switchTab('license')" style="border-radius:0;border:none">🔑 License</button>
+</div>
+
+<!-- ══════════════════ GENERAL TAB ══════════════════ -->
+<div id="tab-general">
+  <div class="grid grid-2">
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">System Identity</div>
+          <div class="card-sub">Hostname and web interface settings</div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Hostname</label>
+        <input class="form-control font-mono" id="set-hostname"
+               value="{{ settings.get('hostname', '') }}" placeholder="e.g. aegisguard-fw01">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Timezone</label>
+        <select class="form-control" id="set-timezone">
+          {% set tz_list = [
+            'UTC','US/Eastern','US/Central','US/Mountain','US/Pacific',
+            'Europe/London','Europe/Paris','Europe/Berlin','Europe/Athens',
+            'Asia/Tokyo','Asia/Shanghai','Asia/Kolkata','Asia/Dubai',
+            'Australia/Sydney','America/Sao_Paulo','Africa/Johannesburg'
+          ] %}
+          {% for tz in tz_list %}
+          <option value="{{ tz }}" {{ 'selected' if settings.get('timezone', 'UTC') == tz }}>{{ tz }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Web UI Port</label>
+        <input class="form-control" id="set-webui-port" type="number" min="1024" max="65535"
+               value="{{ settings.get('web_ui_port', 8000) }}" placeholder="8000">
+        <small class="text-muted">Restart required after changing port</small>
+      </div>
+      <div class="form-group">
+        <label class="form-label">NTP Server</label>
+        <input class="form-control font-mono" id="set-ntp"
+               value="{{ settings.get('ntp_server', 'pool.ntp.org') }}" placeholder="pool.ntp.org">
+      </div>
+      <button class="btn btn-primary" onclick="saveGeneralSettings()">Save General Settings</button>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Change Admin Password</div>
+          <div class="card-sub">Update the administrator account password</div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Current Password</label>
+        <input class="form-control" id="pw-current" type="password" placeholder="Enter current password" autocomplete="current-password">
+      </div>
+      <div class="form-group">
+        <label class="form-label">New Password</label>
+        <input class="form-control" id="pw-new" type="password" placeholder="Min 8 characters" autocomplete="new-password">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Confirm New Password</label>
+        <input class="form-control" id="pw-confirm" type="password" placeholder="Repeat new password" autocomplete="new-password">
+      </div>
+      <div class="form-group">
+        <label class="form-label" style="margin-bottom:6px">Password Strength</label>
+        <div class="progress">
+          <div class="progress-bar" id="pw-strength-bar" style="width:0%;background:var(--danger);transition:width 0.3s"></div>
+        </div>
+      </div>
+      <button class="btn btn-warning" onclick="changePassword()">Change Password</button>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <div class="card-header">
+      <div class="card-title">Preferences</div>
+      <div class="card-sub">Application behaviour and logging preferences</div>
+    </div>
+    <div class="grid grid-3">
+      <div class="form-group">
+        <label class="form-label">Log Retention (days)</label>
+        <input class="form-control" id="log-retention" type="number" min="1" max="365"
+               value="{{ settings.get('log_retention_days', 30) }}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Max Log Entries</label>
+        <input class="form-control" id="max-log-entries" type="number" min="100" max="1000000"
+               value="{{ settings.get('max_log_entries', 10000) }}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Dashboard Refresh (seconds)</label>
+        <input class="form-control" id="refresh-interval" type="number" min="1" max="60"
+               value="{{ settings.get('dashboard_refresh_interval', 5) }}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="enable-notifications"
+               {{ 'checked' if settings.get('enable_notifications', '1') == '1' }}>
+        Enable desktop notifications for threats
+      </label>
+    </div>
+    <button class="btn btn-primary" onclick="savePreferences()">Save Preferences</button>
+  </div>
+</div>
+
+<!-- ══════════════════ FIREWALL TAB ══════════════════ -->
+<div id="tab-firewall" style="display:none">
+  <div class="grid grid-2">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">Firewall Policy</div>
+        <div class="card-sub">Global firewall engine settings</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Default Policy</label>
+        <select class="form-control" id="fw-default-policy">
+          <option value="ALLOW" {{ 'selected' if settings.get('default_policy', 'BLOCK') == 'ALLOW' }}>ALLOW — Permissive (allow traffic not matching rules)</option>
+          <option value="BLOCK" {{ 'selected' if settings.get('default_policy', 'BLOCK') == 'BLOCK' }}>BLOCK — Default-Deny (block traffic not matching rules)</option>
+        </select>
+        <small class="text-muted">Default-Deny is strongly recommended for security</small>
+      </div>
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="fw-log-allowed"
+                 {{ 'checked' if settings.get('log_allowed', '0') == '1' }}>
+          Log allowed connections
+        </label>
+      </div>
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="fw-log-blocked"
+                 {{ 'checked' if settings.get('log_blocked', '1') == '1' }}>
+          Log blocked connections
+        </label>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Max Log Entries (Firewall)</label>
+        <input class="form-control" id="fw-max-log" type="number" min="100" max="1000000"
+               value="{{ settings.get('fw_max_log_entries', 50000) }}">
+      </div>
+      <button class="btn btn-primary" onclick="saveFirewallSettings()">Save Firewall Settings</button>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Firewall Engine Status</div>
+          <div class="card-sub">Current system firewall state</div>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-primary btn-sm" onclick="syncFirewall()">Sync All Rules</button>
+          <button class="btn btn-secondary btn-sm" onclick="refreshFWStatus()">Refresh</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Status Output</label>
+        <textarea class="form-control" id="fw-status-output" rows="12" readonly
+                  style="font-family:monospace;font-size:11px">{{ wf_status }}</textarea>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="copyText(document.getElementById('fw-status-output').value)">Copy Output</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════ NETWORK TAB ══════════════════ -->
+<div id="tab-network" style="display:none">
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Network Configuration</div>
+      <div class="card-sub">WAN/LAN interface assignment and router mode</div>
+    </div>
+    <div class="grid grid-2">
+      <div class="form-group">
+        <label class="form-label">WAN Interface</label>
+        <input class="form-control font-mono" id="net-wan"
+               value="{{ settings.get('wan_interface', '') }}" placeholder="e.g. eth0, ens3, WAN">
+        <small class="text-muted">Internet-facing interface</small>
+      </div>
+      <div class="form-group">
+        <label class="form-label">LAN Interface</label>
+        <input class="form-control font-mono" id="net-lan"
+               value="{{ settings.get('lan_interface', '') }}" placeholder="e.g. eth1, ens4, LAN">
+        <small class="text-muted">Internal network interface</small>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Router Mode</label>
+      <div style="display:flex;align-items:center;gap:16px;margin-top:6px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="radio" name="router-mode" id="router-mode-on" value="1"
+                 {{ 'checked' if settings.get('router_mode', '0') == '1' }}>
+          <strong>Router Mode</strong> — Forward traffic between interfaces (gateway/router)
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="radio" name="router-mode" id="router-mode-off" value="0"
+                 {{ 'checked' if settings.get('router_mode', '0') == '0' }}>
+          <strong>Host Mode</strong> — Protect this host only (no IP forwarding)
+        </label>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Web Filter Hosts File Path</label>
+      <input class="form-control font-mono" id="hosts-path"
+             value="{{ settings.get('hosts_path', '') }}"
+             placeholder="e.g. C:\Windows\System32\drivers\etc\hosts or /etc/hosts">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Hosts Block IP (redirect target)</label>
+      <input class="form-control font-mono" id="hosts-block-ip"
+             value="{{ settings.get('hosts_block_ip', '0.0.0.0') }}" placeholder="0.0.0.0">
+    </div>
+    <div class="form-group">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="auto-flush-dns"
+               {{ 'checked' if settings.get('auto_flush_dns', '1') == '1' }}>
+        Automatically flush DNS cache after applying web filter changes
+      </label>
+    </div>
+    <button class="btn btn-primary" onclick="saveNetworkSettings()">Save Network Settings</button>
+  </div>
+</div>
+
+<!-- ══════════════════ VPN PATHS TAB ══════════════════ -->
+<div id="tab-vpnpaths" style="display:none">
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">VPN Executable Paths</div>
+      <div class="card-sub">Paths to WireGuard and OpenVPN binaries</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">WireGuard CLI Path (wg)</label>
+      <input class="form-control font-mono" id="wg-path"
+             value="{{ settings.get('wireguard_path', '') }}"
+             placeholder="e.g. C:\Program Files\WireGuard\wg.exe or /usr/bin/wg">
+    </div>
+    <div class="form-group">
+      <label class="form-label">WireGuard Interface Tool (wg-quick / wireguard.exe)</label>
+      <input class="form-control font-mono" id="wg-quick-path"
+             value="{{ settings.get('wireguard_quick_path', '') }}"
+             placeholder="e.g. C:\Program Files\WireGuard\wireguard.exe or /usr/bin/wg-quick">
+    </div>
+    <div class="form-group">
+      <label class="form-label">OpenVPN Binary Path</label>
+      <input class="form-control font-mono" id="openvpn-path"
+             value="{{ settings.get('openvpn_path', '') }}"
+             placeholder="e.g. C:\Program Files\OpenVPN\bin\openvpn.exe or /usr/sbin/openvpn">
+    </div>
+    <div class="form-group">
+      <label class="form-label">VPN Config Directory</label>
+      <input class="form-control font-mono" id="vpn-config-dir"
+             value="{{ settings.get('vpn_config_dir', '') }}"
+             placeholder="e.g. C:\vpn\configs or /etc/wireguard">
+    </div>
+    <button class="btn btn-primary" onclick="saveVPNPaths()">Save VPN Paths</button>
+  </div>
+</div>
+
+<!-- ══════════════════ EMAIL ALERTS TAB ══════════════════ -->
+<div id="tab-email" style="display:none">
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <div class="card-title">Email Alert Configuration</div>
+        <div class="card-sub">Send security alerts via SMTP email</div>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-right:4px">
+        <input type="checkbox" id="smtp-enabled"
+               {{ 'checked' if settings.get('smtp_alerts_enabled', '0') == '1' }}>
+        <span class="badge badge-{{ 'allow' if settings.get('smtp_alerts_enabled', '0') == '1' else 'disabled' }}">
+          {{ 'Enabled' if settings.get('smtp_alerts_enabled', '0') == '1' else 'Disabled' }}
+        </span>
+      </label>
+    </div>
+    <div class="grid grid-2">
+      <div class="form-group">
+        <label class="form-label">SMTP Host</label>
+        <input class="form-control font-mono" id="smtp-host"
+               value="{{ settings.get('smtp_host', '') }}" placeholder="e.g. smtp.gmail.com">
+      </div>
+      <div class="form-group">
+        <label class="form-label">SMTP Port</label>
+        <input class="form-control" id="smtp-port" type="number" min="1" max="65535"
+               value="{{ settings.get('smtp_port', 587) }}" placeholder="587">
+      </div>
+    </div>
+    <div class="grid grid-2">
+      <div class="form-group">
+        <label class="form-label">SMTP Username</label>
+        <input class="form-control" id="smtp-user"
+               value="{{ settings.get('smtp_user', '') }}" placeholder="e.g. alerts@company.com">
+      </div>
+      <div class="form-group">
+        <label class="form-label">SMTP Password</label>
+        <input class="form-control" id="smtp-pass" type="password"
+               placeholder="SMTP account password or app password">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Alert Recipient (To)</label>
+      <input class="form-control" id="smtp-to"
+             value="{{ settings.get('smtp_to', '') }}" placeholder="e.g. admin@company.com">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Alert From Address</label>
+      <input class="form-control" id="smtp-from"
+             value="{{ settings.get('smtp_from', '') }}" placeholder="e.g. aegisguard@company.com">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Send Alerts For</label>
+      <div style="display:flex;gap:20px;margin-top:6px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="alert-critical" {{ 'checked' if settings.get('alert_critical', '1') == '1' }}>
+          <span class="badge badge-block">CRITICAL</span> threats
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="alert-high" {{ 'checked' if settings.get('alert_high', '1') == '1' }}>
+          <span class="badge badge-warn">HIGH</span> threats
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="alert-ddos" {{ 'checked' if settings.get('alert_ddos', '1') == '1' }}>
+          <span class="badge badge-info">DDoS</span> blocks
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="alert-auth" {{ 'checked' if settings.get('alert_auth', '0') == '1' }}>
+          <span class="badge badge-disabled">Auth</span> failures
+        </label>
+      </div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="saveEmailSettings()">Save Email Settings</button>
+      <button class="btn btn-secondary" onclick="testEmail()">Send Test Email</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════ SYSLOG TAB ══════════════════ -->
+<div id="tab-syslog" style="display:none">
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <div class="card-title">Syslog Servers</div>
+        <div class="card-sub">{{ log_servers | default([]) | length }} server(s) configured — forward logs to external syslog servers</div>
+      </div>
+      <button class="btn btn-primary" onclick="openModal('add-syslog-modal')">+ Add Syslog Server</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Host</th><th>Port</th><th>Protocol</th><th>Facility</th><th>Min Level</th><th>Enabled</th><th>Actions</th></tr></thead>
+        <tbody id="syslog-tbody">
+          {% for s in log_servers | default([]) %}
+          <tr id="syslog-row-{{ s.id }}">
+            <td>{{ s.name }}</td>
+            <td class="font-mono">{{ s.host }}</td>
+            <td class="font-mono">{{ s.port | default(514) }}</td>
+            <td><span class="badge badge-info">{{ s.protocol | default('UDP') }}</span></td>
+            <td>{{ s.facility | default('local0') }}</td>
+            <td><span class="badge badge-{{ 'block' if s.min_level in ['CRITICAL','ERROR'] else 'warn' if s.min_level == 'WARNING' else 'info' }}">{{ s.min_level | default('INFO') }}</span></td>
+            <td><span class="badge badge-{{ 'allow' if s.enabled else 'disabled' }}">{{ 'Yes' if s.enabled else 'No' }}</span></td>
+            <td>
+              <div class="btn-group">
+                <button class="btn btn-secondary btn-sm" onclick="testSyslog({{ s.id }})">Test</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteSyslog({{ s.id }})">✕</button>
+              </div>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="8" class="text-muted" style="text-align:center;padding:20px">No syslog servers configured.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════ DANGER ZONE TAB ══════════════════ -->
+<div id="tab-danger" style="display:none">
+  <div class="card" style="border-color:var(--danger)">
+    <div class="card-header">
+      <div>
+        <div class="card-title" style="color:var(--danger)">Danger Zone</div>
+        <div class="card-sub">Irreversible actions — these cannot be undone</div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:16px;padding:8px 0">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border)">
+        <div>
+          <div style="font-weight:600">Clear All Firewall Logs</div>
+          <div class="text-muted" style="font-size:12px;margin-top:4px">Permanently delete all log entries from the database. Active rules are unaffected.</div>
+        </div>
+        <button class="btn btn-danger" onclick="clearAllLogs()">Clear All Logs</button>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border)">
+        <div>
+          <div style="font-weight:600">Reset Settings to Defaults</div>
+          <div class="text-muted" style="font-size:12px;margin-top:4px">Restore all application settings to factory defaults. Rules and certificates are preserved.</div>
+        </div>
+        <button class="btn btn-danger" onclick="resetSettings()">Reset to Defaults</button>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border)">
+        <div>
+          <div style="font-weight:600">Delete All Firewall Rules</div>
+          <div class="text-muted" style="font-size:12px;margin-top:4px">Remove all firewall rules. The system will use the default policy only.</div>
+        </div>
+        <button class="btn btn-danger" onclick="deleteAllRules()">Delete All Rules</button>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0">
+        <div>
+          <div style="font-weight:600">Full Factory Reset</div>
+          <div class="text-muted" style="font-size:12px;margin-top:4px">Delete ALL data: rules, logs, settings, certificates, users, VPN profiles. Restores to fresh install state.</div>
+        </div>
+        <button class="btn btn-danger" style="background:#7b0000" onclick="factoryReset()">Full Factory Reset</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════ ABOUT TAB ══════════════════ -->
+<div id="tab-about" style="display:none">
+  <div class="grid grid-2">
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">FGUARD UTC</div>
+          <div class="card-sub">Next-Generation Firewall Platform</div>
+        </div>
+        <span class="badge badge-allow">v1.0.0</span>
+      </div>
+      <div style="font-size:13px;line-height:1.8;color:var(--text-muted);padding:8px 0">
+        FGUARD UTC is a comprehensive network security platform providing enterprise-grade firewall capabilities
+        with an intuitive web-based management interface. Built on FastAPI and designed for reliability and
+        performance across Windows and Linux environments.
+      </div>
+      <div class="form-group" style="margin-top:12px">
+        <label class="form-label">Build Information</label>
+        <div class="font-mono text-muted" style="font-size:11px;line-height:2">
+          Version: 1.0.0<br>
+          Engine: FastAPI + Jinja2<br>
+          Database: SQLite<br>
+          Platform: Cross-platform (Windows / Linux / macOS)
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">Feature Set</div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px;padding:4px 0">
+        {% set features = [
+          ('Firewall Policies', 'Stateful packet filtering with priority-based rules'),
+          ('Application Control', 'Layer-7 application identification and control'),
+          ('Web Filter', 'URL/domain blocking via hosts file and DNS'),
+          ('Intrusion Prevention (IPS)', 'Signature-based threat detection and alerting'),
+          ('IP Reputation / RED', 'Threat intelligence feed with automatic blocking'),
+          ('Anti-DDoS', 'Rate limiting and connection flood protection'),
+          ('GeoIP Blocking', 'Country-based traffic filtering'),
+          ('Gateway AntiVirus', 'ClamAV-powered file and traffic scanning'),
+          ('Data Loss Prevention', 'Pattern-based sensitive data detection'),
+          ('VPN Manager', 'WireGuard and OpenVPN profile management'),
+          ('Network Discovery', 'Nmap-powered host and port scanning'),
+          ('Network Management', 'Interface, route, DHCP, NAT and QoS configuration'),
+          ('Certificate Manager', 'SSL/TLS certificate generation and storage'),
+          ('Proxy Rules', 'HTTP/HTTPS/SMTP/DNS/FTP application proxy'),
+          ('Syslog Forwarding', 'External SIEM/log server integration'),
+          ('Email Alerts', 'SMTP-based security event notifications'),
+        ] %}
+        {% for name, desc in features %}
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)">
+          <span style="color:var(--success);font-size:14px;flex-shrink:0">✓</span>
+          <div>
+            <div style="font-weight:600;font-size:12px">{{ name }}</div>
+            <div class="text-muted" style="font-size:11px">{{ desc }}</div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════ MODALS ══════════════════ -->
+
+<!-- Add Syslog Server Modal -->
+<div class="modal-overlay" id="add-syslog-modal">
+  <div class="modal" style="width:520px">
+    <div class="modal-header">
+      <span class="modal-title">Add Syslog Server</span>
+      <button class="modal-close" onclick="closeModal('add-syslog-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Server Name *</label>
+        <input class="form-control" id="sl-name" placeholder="e.g. Main SIEM">
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Host / IP *</label>
+          <input class="form-control font-mono" id="sl-host" placeholder="e.g. 10.0.0.50 or siem.company.com">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Port</label>
+          <input class="form-control" id="sl-port" type="number" value="514" min="1" max="65535">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Protocol</label>
+          <select class="form-control" id="sl-proto">
+            <option value="UDP">UDP (standard syslog)</option>
+            <option value="TCP">TCP (reliable)</option>
+            <option value="TLS">TLS (encrypted)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Facility</label>
+          <select class="form-control" id="sl-facility">
+            <option value="local0">local0</option><option value="local1">local1</option>
+            <option value="local2">local2</option><option value="local3">local3</option>
+            <option value="local4">local4</option><option value="local5">local5</option>
+            <option value="local6">local6</option><option value="local7">local7</option>
+            <option value="daemon">daemon</option><option value="security">security</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Minimum Severity Level</label>
+        <select class="form-control" id="sl-level">
+          <option value="DEBUG">DEBUG (all messages)</option>
+          <option value="INFO" selected>INFO</option>
+          <option value="WARNING">WARNING</option>
+          <option value="ERROR">ERROR</option>
+          <option value="CRITICAL">CRITICAL only</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="sl-enabled" checked> Server Enabled
+        </label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('add-syslog-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveSyslog()">Save Server</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════ LICENSE TAB ══════════════════ -->
+<div id="tab-license" style="display:none">
+  <div class="grid grid-2">
+
+    <!-- Current Status -->
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">License Status</div>
+          <div class="card-sub">Current activation status for this appliance</div>
+        </div>
+      </div>
+      <div id="lic-status-block" style="padding:8px 0">
+        {% if lic_status == 'valid' %}
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+          <span style="background:var(--success);color:#fff;border-radius:20px;padding:4px 14px;font-size:13px;font-weight:600">✔ Active</span>
+          <span style="color:var(--text-muted);font-size:13px">{{ lic_days }} days remaining</span>
+        </div>
+        {% elif lic_status == 'expiring' %}
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+          <span style="background:var(--warning);color:#fff;border-radius:20px;padding:4px 14px;font-size:13px;font-weight:600">⚠ Expiring Soon</span>
+          <span style="color:var(--text-muted);font-size:13px">{{ lic_days }} days remaining</span>
+        </div>
+        {% elif lic_status == 'expired' %}
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+          <span style="background:var(--danger);color:#fff;border-radius:20px;padding:4px 14px;font-size:13px;font-weight:600">✖ Expired</span>
+        </div>
+        {% else %}
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+          <span style="background:#555;color:#fff;border-radius:20px;padding:4px 14px;font-size:13px;font-weight:600">○ No License</span>
+        </div>
+        {% endif %}
+
+        <table style="width:100%;font-size:13px;border-collapse:collapse">
+          <tr><td style="color:var(--text-muted);padding:5px 0;width:120px">Customer</td>
+              <td id="lic-customer" style="color:var(--text)">{{ lic_customer or '—' }}</td></tr>
+          <tr><td style="color:var(--text-muted);padding:5px 0">Expires</td>
+              <td id="lic-expires" style="color:var(--text)">{{ lic_expires or '—' }}</td></tr>
+          <tr><td style="color:var(--text-muted);padding:5px 0">Status</td>
+              <td id="lic-status-txt" style="color:var(--text)">{{ lic_status }}</td></tr>
+        </table>
+
+        <div style="margin-top:14px;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;font-size:12px;color:var(--text-muted)">
+          <strong style="color:var(--text)">Features controlled by license:</strong><br>
+          Web Filter &nbsp;·&nbsp; Application Control &nbsp;·&nbsp; GeoIP Blocking
+        </div>
+
+        <button class="btn btn-danger" style="margin-top:14px;width:100%" onclick="removeLicense()">
+          🗑 Remove License
+        </button>
+      </div>
+    </div>
+
+    <!-- Activate / Update -->
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Activate / Update License</div>
+          <div class="card-sub">Paste the license key provided by your vendor</div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">License Key</label>
+        <textarea id="lic-key-input" class="form-control font-mono"
+                  rows="6" placeholder="Paste your FGUARD UTC license key here..."
+                  style="font-size:11px;resize:vertical"></textarea>
+      </div>
+      <button class="btn btn-primary" style="width:100%" onclick="activateLicense()">
+        ✔ Activate License
+      </button>
+      <div id="lic-result" style="margin-top:10px;font-size:13px"></div>
+    </div>
+
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const SETTINGS_TABS = ['general','firewall','network','vpnpaths','email','syslog','danger','about','license'];
+function switchTab(name) {
+  SETTINGS_TABS.forEach(t => {
+    document.getElementById('tab-' + t).style.display = t === name ? '' : 'none';
+    const btn = document.getElementById('tab-btn-' + t);
+    if (btn) {
+      btn.style.background = t === name ? 'var(--accent)' : '';
+      btn.style.color = t === name ? '#fff' : '';
+    }
+  });
+}
+switchTab('general');
+
+// ── Password strength meter ──
+document.getElementById('pw-new').addEventListener('input', function() {
+  const pw = this.value;
+  let strength = 0;
+  if (pw.length >= 8) strength += 25;
+  if (pw.length >= 12) strength += 15;
+  if (/[A-Z]/.test(pw)) strength += 20;
+  if (/[0-9]/.test(pw)) strength += 20;
+  if (/[^A-Za-z0-9]/.test(pw)) strength += 20;
+  const bar = document.getElementById('pw-strength-bar');
+  bar.style.width = strength + '%';
+  bar.style.background = strength < 40 ? 'var(--danger)' : strength < 70 ? 'var(--warning)' : 'var(--success)';
+});
+
+// ── General settings ──
+async function saveGeneralSettings() {
+  const data = {
+    hostname: document.getElementById('set-hostname').value.trim(),
+    timezone: document.getElementById('set-timezone').value,
+    web_ui_port: document.getElementById('set-webui-port').value,
+    ntp_server: document.getElementById('set-ntp').value.trim(),
+  };
+  try { await POST('/api/settings', data); toast('System settings saved', 'success'); }
+  catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function savePreferences() {
+  const data = {
+    log_retention_days: document.getElementById('log-retention').value,
+    max_log_entries: document.getElementById('max-log-entries').value,
+    dashboard_refresh_interval: document.getElementById('refresh-interval').value,
+    enable_notifications: document.getElementById('enable-notifications').checked ? '1' : '0',
+  };
+  try { await POST('/api/settings', data); toast('Preferences saved', 'success'); }
+  catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function changePassword() {
+  const current = document.getElementById('pw-current').value;
+  const newPw = document.getElementById('pw-new').value;
+  const confirm = document.getElementById('pw-confirm').value;
+  if (!current) { toast('Enter current password', 'error'); return; }
+  if (!newPw || newPw.length < 8) { toast('New password must be at least 8 characters', 'error'); return; }
+  if (newPw !== confirm) { toast('New passwords do not match', 'error'); return; }
+  try {
+    await POST('/api/settings/change-password', { current_password: current, new_password: newPw });
+    toast('Password changed successfully', 'success');
+    document.getElementById('pw-current').value = '';
+    document.getElementById('pw-new').value = '';
+    document.getElementById('pw-confirm').value = '';
+    document.getElementById('pw-strength-bar').style.width = '0%';
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+// ── Firewall settings ──
+async function saveFirewallSettings() {
+  const data = {
+    default_policy: document.getElementById('fw-default-policy').value,
+    log_allowed: document.getElementById('fw-log-allowed').checked ? '1' : '0',
+    log_blocked: document.getElementById('fw-log-blocked').checked ? '1' : '0',
+    fw_max_log_entries: document.getElementById('fw-max-log').value,
+  };
+  try { await POST('/api/settings', data); toast('Firewall settings saved', 'success'); }
+  catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function syncFirewall() {
+  try {
+    toast('Syncing rules to system...', 'info');
+    const r = await POST('/api/settings/sync-firewall');
+    toast(`Synced ${r.synced}/${r.total} rules to system`, 'success');
+    await refreshFWStatus();
+  } catch (e) { toast('Sync error: ' + e.message, 'error'); }
+}
+
+async function refreshFWStatus() {
+  try {
+    const r = await GET('/api/settings/fw-status');
+    document.getElementById('fw-status-output').value = r.status || '(No status available)';
+    toast('Status refreshed', 'info');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+// ── Network settings ──
+async function saveNetworkSettings() {
+  const mode = document.querySelector('input[name="router-mode"]:checked')?.value || '0';
+  const data = {
+    wan_interface: document.getElementById('net-wan').value.trim(),
+    lan_interface: document.getElementById('net-lan').value.trim(),
+    router_mode: mode,
+    hosts_path: document.getElementById('hosts-path').value.trim(),
+    hosts_block_ip: document.getElementById('hosts-block-ip').value.trim(),
+    auto_flush_dns: document.getElementById('auto-flush-dns').checked ? '1' : '0',
+  };
+  try { await POST('/api/settings', data); toast('Network settings saved', 'success'); }
+  catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+// ── VPN paths ──
+async function saveVPNPaths() {
+  const data = {
+    wireguard_path: document.getElementById('wg-path').value.trim(),
+    wireguard_quick_path: document.getElementById('wg-quick-path').value.trim(),
+    openvpn_path: document.getElementById('openvpn-path').value.trim(),
+    vpn_config_dir: document.getElementById('vpn-config-dir').value.trim(),
+  };
+  try { await POST('/api/settings', data); toast('VPN paths saved', 'success'); }
+  catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+// ── Email alert settings ──
+async function saveEmailSettings() {
+  const data = {
+    smtp_alerts_enabled: document.getElementById('smtp-enabled').checked ? '1' : '0',
+    smtp_host: document.getElementById('smtp-host').value.trim(),
+    smtp_port: document.getElementById('smtp-port').value,
+    smtp_user: document.getElementById('smtp-user').value.trim(),
+    smtp_password: document.getElementById('smtp-pass').value,
+    smtp_to: document.getElementById('smtp-to').value.trim(),
+    smtp_from: document.getElementById('smtp-from').value.trim(),
+    alert_critical: document.getElementById('alert-critical').checked ? '1' : '0',
+    alert_high: document.getElementById('alert-high').checked ? '1' : '0',
+    alert_ddos: document.getElementById('alert-ddos').checked ? '1' : '0',
+    alert_auth: document.getElementById('alert-auth').checked ? '1' : '0',
+  };
+  try { await POST('/api/settings', data); toast('Email alert settings saved', 'success'); }
+  catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function testEmail() {
+  try {
+    toast('Sending test email...', 'info');
+    const r = await POST('/api/settings/test-email');
+    toast(r.message || 'Test email sent', 'success');
+  } catch (e) { toast('Test failed: ' + e.message, 'error'); }
+}
+
+// ── Syslog ──
+async function saveSyslog() {
+  const name = document.getElementById('sl-name').value.trim();
+  const host = document.getElementById('sl-host').value.trim();
+  if (!name || !host) { toast('Server name and host are required', 'error'); return; }
+  const data = {
+    name, host,
+    port: parseInt(document.getElementById('sl-port').value) || 514,
+    protocol: document.getElementById('sl-proto').value,
+    facility: document.getElementById('sl-facility').value,
+    min_level: document.getElementById('sl-level').value,
+    enabled: document.getElementById('sl-enabled').checked ? 1 : 0,
+  };
+  try {
+    await POST('/api/logging/servers', data);
+    toast('Syslog server added', 'success');
+    closeModal('add-syslog-modal');
+    setTimeout(() => location.reload(), 600);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function testSyslog(id) {
+  try {
+    const r = await POST(`/api/logging/servers/${id}/test`);
+    toast(r.message || 'Syslog test sent', 'success');
+  } catch (e) { toast('Test error: ' + e.message, 'error'); }
+}
+
+async function deleteSyslog(id) {
+  if (!confirm2('Delete this syslog server?')) return;
+  try {
+    await DELETE(`/api/logging/servers/${id}`);
+    document.getElementById(`syslog-row-${id}`)?.remove();
+    toast('Syslog server removed', 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+// ── Danger zone ──
+async function clearAllLogs() {
+  if (!confirm2('Clear ALL log entries permanently? This cannot be undone.')) return;
+  try {
+    await POST('/api/logs/clear');
+    toast('All logs cleared', 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function deleteAllRules() {
+  if (!confirm2('Delete ALL firewall rules? The default policy will apply to all traffic.')) return;
+  try {
+    await POST('/api/rules/clear-all');
+    toast('All firewall rules deleted', 'success');
+    setTimeout(() => location.reload(), 600);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function resetSettings() {
+  if (!confirm2('Reset all settings to defaults? This will clear all custom configuration.')) return;
+  const defaults = {
+    log_retention_days: '30',
+    max_log_entries: '10000',
+    dashboard_refresh_interval: '5',
+    enable_notifications: '1',
+    default_policy: 'BLOCK',
+    log_allowed: '0',
+    log_blocked: '1',
+    hosts_block_ip: '0.0.0.0',
+    auto_flush_dns: '1',
+    smtp_alerts_enabled: '0',
+    router_mode: '0',
+    ntp_server: 'pool.ntp.org',
+    wireguard_path: '',
+    wireguard_quick_path: '',
+    openvpn_path: '',
+    vpn_config_dir: '',
+    hosts_path: '',
+    wan_interface: '',
+    lan_interface: '',
+  };
+  try {
+    await POST('/api/settings', defaults);
+    toast('Settings reset to defaults', 'success');
+    setTimeout(() => location.reload(), 600);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function factoryReset() {
+  if (!confirm2('FULL FACTORY RESET: Delete ALL data including rules, logs, users, certificates and settings? This is completely irreversible!')) return;
+  if (!confirm2('Are you absolutely sure? All configuration will be permanently deleted.')) return;
+  try {
+    await POST('/api/settings/factory-reset');
+    toast('Factory reset initiated — reloading...', 'info');
+    setTimeout(() => location.reload(), 2000);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+document.getElementById('add-syslog-modal').addEventListener('click', e => {
+  if (e.target === document.getElementById('add-syslog-modal')) closeModal('add-syslog-modal');
+});
+
+// ── License ──
+async function activateLicense() {
+  const key = document.getElementById('lic-key-input').value.trim();
+  const res = document.getElementById('lic-result');
+  if (!key) { res.innerHTML = '<span style="color:var(--danger)">Paste a license key first.</span>'; return; }
+  res.innerHTML = '<span style="color:var(--text-muted)">Validating…</span>';
+  try {
+    const r = await fetch('/api/license', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key})
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Error');
+    toast('License activated successfully', 'success');
+    res.innerHTML = '<span style="color:var(--success)">✔ License activated — reloading…</span>';
+    setTimeout(() => location.reload(), 1200);
+  } catch (e) {
+    res.innerHTML = `<span style="color:var(--danger)">✖ ${e.message}</span>`;
+  }
+}
+
+async function removeLicense() {
+  if (!confirm2('Remove the current license key? Licensed features will be disabled until a new key is entered.')) return;
+  try {
+    const r = await fetch('/api/license', {method: 'DELETE'});
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Error');
+    toast('License removed', 'info');
+    setTimeout(() => location.reload(), 800);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+</script>
+{% endblock %}

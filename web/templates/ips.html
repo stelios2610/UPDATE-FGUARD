@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+{% block title %}Intrusion Prevention{% endblock %}
+{% block page_title %}Intrusion Prevention System{% endblock %}
+{% set active = "ips" %}
+
+{% block content %}
+
+<!-- Stats Row -->
+<div class="grid grid-4" style="margin-bottom:16px">
+  <div class="stat-card red">
+    <div class="value" id="alert-count">{{ alerts|length }}</div>
+    <div class="label">Active Alerts</div>
+  </div>
+  <div class="stat-card blue">
+    <div class="value">{{ signatures|length }}</div>
+    <div class="label">Loaded Signatures</div>
+  </div>
+  <div class="stat-card green">
+    <div class="value">{{ signatures|selectattr('enabled')|list|length }}</div>
+    <div class="label">Active Signatures</div>
+  </div>
+  <div class="stat-card orange">
+    <div class="value" id="blocked-count">0</div>
+    <div class="label">Auto-Blocked IPs</div>
+  </div>
+</div>
+
+<!-- Auto-Blocked IPs -->
+<div class="card" id="blocked-card">
+  <div class="card-header">
+    <div>
+      <div class="card-title">Auto-Blocked IPs</div>
+      <div class="card-sub">IPs automatically blocked by IPS — HIGH: 10 min, CRITICAL: 60 min</div>
+    </div>
+    <button class="btn btn-secondary btn-sm" onclick="loadBlocked()">Refresh</button>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>IP Address</th><th>Action</th></tr>
+      </thead>
+      <tbody id="blocked-tbody">
+        <tr><td colspan="2" class="text-muted" style="text-align:center;padding:20px">No IPs currently blocked</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Signatures Table -->
+<div class="card">
+  <div class="card-header">
+    <div>
+      <div class="card-title">IPS Signatures</div>
+      <div class="card-sub">{{ signatures|length }} signature(s) loaded · Pattern-based intrusion detection</div>
+    </div>
+    <select class="form-control" id="sev-filter" onchange="filterBySeverity()" style="max-width:150px">
+      <option value="">All Severities</option>
+      <option value="CRITICAL">CRITICAL</option>
+      <option value="HIGH">HIGH</option>
+      <option value="MEDIUM">MEDIUM</option>
+    </select>
+  </div>
+  <div class="table-wrap">
+    <table id="main-table">
+      <thead>
+        <tr>
+          <th>ID</th><th>Name</th><th>Severity</th><th>Description</th><th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for sig in signatures %}
+        {% set sev_class = {'CRITICAL': 'critical', 'HIGH': 'high', 'MEDIUM': 'med', 'LOW': 'info'} %}
+        <tr id="sig-{{ sig.id }}">
+          <td class="font-mono text-muted">{{ sig.id }}</td>
+          <td>{{ sig.name }}</td>
+          <td><span class="badge badge-{{ sev_class.get(sig.severity, 'info') }}">{{ sig.severity }}</span></td>
+          <td class="text-muted">{{ sig.description }}</td>
+          <td>
+            <span class="badge badge-{{ 'allow' if sig.enabled else 'disabled' }}">
+              {{ 'Enabled' if sig.enabled else 'Disabled' }}
+            </span>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="5" class="text-muted" style="text-align:center;padding:30px">No IPS signatures loaded.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Live Alerts -->
+<div class="card">
+  <div class="card-header">
+    <div>
+      <div class="card-title">Live Security Alerts</div>
+      <div class="card-sub">Real-time intrusion detection · Auto-refreshes every 4 seconds</div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-secondary btn-sm" onclick="refreshAlerts()">Refresh</button>
+      <button class="btn btn-danger btn-sm" onclick="clearAlerts()">Clear All</button>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Timestamp</th><th>Severity</th><th>Signature</th>
+          <th>Source IP</th><th>Detail</th><th>Action</th>
+        </tr>
+      </thead>
+      <tbody id="alert-tbody">
+        {% for a in alerts %}
+        {% set sev_class = {'CRITICAL': 'critical', 'HIGH': 'high', 'MEDIUM': 'med', 'LOW': 'info'} %}
+        <tr>
+          <td class="font-mono text-muted">{{ a.timestamp[:19]|replace('T',' ') if a.timestamp else '—' }}</td>
+          <td><span class="badge badge-{{ sev_class.get(a.severity, 'info') }}">{{ a.severity }}</span></td>
+          <td>{{ a.name }}</td>
+          <td class="font-mono">{{ a.remote_ip }}</td>
+          <td class="text-muted">{{ a.detail }}</td>
+          <td>
+            {% if a.blocked %}
+            <span class="badge badge-critical" title="IP auto-blocked">Blocked</span>
+            {% else %}
+            <span class="text-muted">—</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr id="no-alerts-row">
+          <td colspan="6" class="text-muted" style="text-align:center;padding:20px">No alerts detected.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const SEV_CLASS = {CRITICAL:'critical', HIGH:'high', MEDIUM:'med', LOW:'info'};
+
+async function loadBlocked() {
+  try {
+    const r = await fetch('/api/ips/blocked');
+    const data = await r.json();
+    const ips = data.blocked || [];
+    document.getElementById('blocked-count').textContent = ips.length;
+    const tbody = document.getElementById('blocked-tbody');
+    if (!ips.length) {
+      tbody.innerHTML = '<tr><td colspan="2" class="text-muted" style="text-align:center;padding:20px">No IPs currently blocked</td></tr>';
+      return;
+    }
+    tbody.innerHTML = ips.map(ip => `
+      <tr id="blocked-${ip.replace(/\./g,'_')}">
+        <td class="font-mono">${ip}</td>
+        <td><button class="btn btn-secondary btn-sm" onclick="unblockIP('${ip}')">Unblock</button></td>
+      </tr>`).join('');
+  } catch(e) {}
+}
+
+async function unblockIP(ip) {
+  try {
+    await POST('/api/ips/unblock/' + ip);
+    toast('Unblocked ' + ip, 'success');
+    loadBlocked();
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function refreshAlerts() {
+  try {
+    const data = await (await fetch('/api/ips/alerts')).json();
+    document.getElementById('alert-count').textContent = data.length;
+    const tbody = document.getElementById('alert-tbody');
+    if (!data.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="text-muted" style="text-align:center;padding:20px">No alerts detected.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.map(a => {
+      const cls = SEV_CLASS[a.severity] || 'info';
+      const ts  = (a.timestamp||'').slice(0,19).replace('T',' ');
+      const blocked = a.blocked ? '<span class="badge badge-critical">Blocked</span>' : '<span class="text-muted">—</span>';
+      return `<tr>
+        <td class="font-mono text-muted">${ts}</td>
+        <td><span class="badge badge-${cls}">${a.severity}</span></td>
+        <td>${a.name}</td>
+        <td class="font-mono">${a.remote_ip}</td>
+        <td class="text-muted">${a.detail}</td>
+        <td>${blocked}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) {}
+}
+
+async function clearAlerts() {
+  if (!confirm2('Clear all IPS alerts?')) return;
+  try {
+    await POST('/api/ips/clear');
+    document.getElementById('alert-tbody').innerHTML =
+      '<tr><td colspan="6" class="text-muted" style="text-align:center;padding:20px">No alerts detected.</td></tr>';
+    document.getElementById('alert-count').textContent = '0';
+    toast('Alerts cleared', 'success');
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+function filterBySeverity() {
+  const val = document.getElementById('sev-filter').value.toLowerCase();
+  document.querySelectorAll('#main-table tbody tr').forEach(row => {
+    row.style.display = (!val || row.textContent.toLowerCase().includes(val)) ? '' : 'none';
+  });
+}
+
+// Auto-refresh every 4 seconds
+loadBlocked();
+setInterval(() => { refreshAlerts(); loadBlocked(); }, 4000);
+</script>
+{% endblock %}

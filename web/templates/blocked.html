@@ -1,0 +1,304 @@
+{% extends "base.html" %}
+{% block title %}Blocked Sites{% endblock %}
+{% block page_title %}Blocked Sites{% endblock %}
+{% set active = "blocked" %}
+
+{% block content %}
+
+<!-- Summary -->
+<div class="grid grid-4" style="margin-bottom:16px">
+  <div class="stat-card red">
+    <div class="value">{{ ip_rules|length }}</div>
+    <div class="label">Blocked IPs</div>
+  </div>
+  <div class="stat-card orange">
+    <div class="value">{{ domain_rules|length }}</div>
+    <div class="label">Blocked Domains</div>
+  </div>
+  <div class="stat-card">
+    <div class="value">{{ ip_rules|length + domain_rules|length }}</div>
+    <div class="label">Total Blocks</div>
+  </div>
+  <div class="stat-card blue">
+    <div class="value">—</div>
+    <div class="label">Hits Today</div>
+  </div>
+</div>
+
+<!-- Tab Navigation -->
+<div style="display:flex;gap:0;margin-bottom:0;border-bottom:1px solid var(--border)">
+  <button class="tab-btn active" id="tab-ip" onclick="switchTab('ip')">
+    IP Blocklist <span class="badge badge-block" style="margin-left:6px">{{ ip_rules|length }}</span>
+  </button>
+  <button class="tab-btn" id="tab-domain" onclick="switchTab('domain')">
+    Domain Blocklist <span class="badge badge-block" style="margin-left:6px">{{ domain_rules|length }}</span>
+  </button>
+</div>
+
+<style>
+.tab-btn {
+  padding: 10px 20px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 6px 6px 0 0;
+  margin-right: 4px;
+}
+.tab-btn.active {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--bg-card);
+  margin-bottom: -1px;
+  position: relative;
+  z-index: 1;
+}
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+</style>
+
+<!-- IP Blocklist Tab -->
+<div class="tab-panel active card" id="panel-ip" style="border-radius:0 8px 8px 8px;margin-top:0">
+  <div class="card-header">
+    <div>
+      <div class="card-title">IP Address Blocklist</div>
+      <div class="card-sub">Block all traffic to/from specific IP addresses</div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="openModal('add-ip-modal')">+ Block IP</button>
+      <button class="btn btn-secondary" onclick="syncIPRules()">Sync to System</button>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <input id="search-input" class="form-control" style="max-width:260px" placeholder="Search IPs...">
+  </div>
+
+  <div class="table-wrap">
+    <table id="main-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Blocked IP / Subnet</th>
+          <th>Direction</th>
+          <th>Protocol</th>
+          <th>Priority</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="ip-tbody">
+        {% for r in ip_rules %}
+        <tr id="iprule-{{ r.id }}">
+          <td class="text-muted">{{ r.id }}</td>
+          <td class="font-mono">{{ r.remote_ip or r.name.replace('Block-IP:','') }}</td>
+          <td>{{ r.direction }}</td>
+          <td>{{ r.protocol or 'ANY' }}</td>
+          <td>{{ r.priority }}</td>
+          <td>
+            <span class="badge badge-{{ 'block' if r.enabled else 'disabled' }}">
+              {{ 'Blocked' if r.enabled else 'Disabled' }}
+            </span>
+          </td>
+          <td>
+            <button class="btn btn-danger btn-sm" onclick="unblockIP({{ r.id }})">Unblock</button>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="7" class="text-muted" style="text-align:center;padding:30px">
+            No IP addresses blocked. Click "Block IP" to add one.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Domain Blocklist Tab -->
+<div class="tab-panel card" id="panel-domain" style="border-radius:0 8px 8px 8px;margin-top:0">
+  <div class="card-header">
+    <div>
+      <div class="card-title">Domain Blocklist</div>
+      <div class="card-sub">Block specific domains and patterns via hosts file</div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="openModal('add-domain-modal')">+ Block Domain</button>
+      <a href="/webfilter" class="btn btn-secondary">Advanced Web Filter</a>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <input id="search-domain" class="form-control" style="max-width:260px" placeholder="Search domains...">
+  </div>
+
+  <div class="table-wrap">
+    <table id="domain-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Domain / Pattern</th>
+          <th>Category</th>
+          <th>Status</th>
+          <th>Description</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="domain-tbody">
+        {% for f in domain_rules %}
+        <tr id="domrule-{{ f.id }}">
+          <td class="text-muted">{{ f.id }}</td>
+          <td class="font-mono">{{ f.pattern }}</td>
+          <td><span class="badge badge-info">{{ f.category }}</span></td>
+          <td>
+            <span class="badge badge-{{ 'block' if f.enabled else 'disabled' }}">
+              {{ 'Blocked' if f.enabled else 'Disabled' }}
+            </span>
+          </td>
+          <td class="text-muted">{{ f.description or '—' }}</td>
+          <td>
+            <button class="btn btn-danger btn-sm" onclick="unblockDomain({{ f.id }})">Unblock</button>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="6" class="text-muted" style="text-align:center;padding:30px">
+            No domains blocked. Click "Block Domain" to add one.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Block IP Modal -->
+<div class="modal-overlay" id="add-ip-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Block IP Address</span>
+      <button class="modal-close" onclick="closeModal('add-ip-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">IP Address or Subnet *</label>
+        <input class="form-control font-mono" id="block-ip" placeholder="e.g. 192.168.1.100 or 10.0.0.0/8">
+      </div>
+      <div class="alert alert-info" style="margin-top:8px">
+        This creates a firewall rule that blocks all inbound and outbound traffic to the specified IP address or CIDR range.
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('add-ip-modal')">Cancel</button>
+      <button class="btn btn-danger" onclick="blockIP()">Block IP</button>
+    </div>
+  </div>
+</div>
+
+<!-- Block Domain Modal -->
+<div class="modal-overlay" id="add-domain-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Block Domain</span>
+      <button class="modal-close" onclick="closeModal('add-domain-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Domain or Pattern *</label>
+        <input class="form-control font-mono" id="block-domain" placeholder="e.g. ads.example.com or *.tracker.net">
+      </div>
+      <div class="alert alert-info" style="margin-top:8px">
+        Domain blocking uses the system hosts file to redirect the domain to 0.0.0.0. Apply filters in Web Filter to take effect.
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('add-domain-modal')">Cancel</button>
+      <button class="btn btn-danger" onclick="blockDomain()">Block Domain</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function switchTab(tab) {
+  ['ip', 'domain'].forEach(t => {
+    document.getElementById(`tab-${t}`).classList.toggle('active', t === tab);
+    document.getElementById(`panel-${t}`).classList.toggle('active', t === tab);
+  });
+}
+
+async function blockIP() {
+  const ip = document.getElementById('block-ip').value.trim();
+  if (!ip) { toast('IP address is required', 'error'); return; }
+  try {
+    await POST('/api/blocked/ip', { ip });
+    toast(`${ip} blocked`, 'success');
+    closeModal('add-ip-modal');
+    document.getElementById('block-ip').value = '';
+    setTimeout(() => location.reload(), 600);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function unblockIP(id) {
+  if (!confirm2('Remove this IP block rule?')) return;
+  try {
+    await DELETE(`/api/blocked/ip/${id}`);
+    document.getElementById(`iprule-${id}`)?.remove();
+    toast('IP unblocked', 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function blockDomain() {
+  const domain = document.getElementById('block-domain').value.trim();
+  if (!domain) { toast('Domain is required', 'error'); return; }
+  try {
+    await POST('/api/blocked/domain', { domain });
+    toast(`${domain} blocked`, 'success');
+    closeModal('add-domain-modal');
+    document.getElementById('block-domain').value = '';
+    setTimeout(() => location.reload(), 600);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function unblockDomain(id) {
+  if (!confirm2('Remove this domain block?')) return;
+  try {
+    await DELETE(`/api/webfilter/${id}`);
+    document.getElementById(`domrule-${id}`)?.remove();
+    toast('Domain unblocked', 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function syncIPRules() {
+  try {
+    const r = await POST('/api/rules/sync');
+    toast(`Synced ${r.synced}/${r.total} rules to system`, 'success');
+  } catch (e) { toast('Sync error: ' + e.message, 'error'); }
+}
+
+// Domain tab search
+document.addEventListener('DOMContentLoaded', () => {
+  const domainSearch = document.getElementById('search-domain');
+  if (domainSearch) {
+    domainSearch.addEventListener('input', () => {
+      const q = domainSearch.value.toLowerCase();
+      document.querySelectorAll('#domain-table tbody tr').forEach(row => {
+        row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
+      });
+    });
+  }
+});
+
+document.getElementById('add-ip-modal').addEventListener('click', e => {
+  if (e.target === document.getElementById('add-ip-modal')) closeModal('add-ip-modal');
+});
+document.getElementById('add-domain-modal').addEventListener('click', e => {
+  if (e.target === document.getElementById('add-domain-modal')) closeModal('add-domain-modal');
+});
+</script>
+{% endblock %}

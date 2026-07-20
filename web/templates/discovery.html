@@ -1,0 +1,362 @@
+{% extends "base.html" %}
+{% block title %}Network Discovery{% endblock %}
+{% block page_title %}Network Discovery{% endblock %}
+{% set active = "discovery" %}
+
+{% block content %}
+
+{% if not nmap_available %}
+<div class="alert alert-warning" style="margin-bottom:16px">
+  Nmap is not installed or not found in PATH. Port/OS/service/vulnerability scans require Nmap. Install with:
+  <code style="font-family:monospace">apt install nmap</code> or download from <a href="https://nmap.org" target="_blank" style="color:var(--info)">nmap.org</a>.
+  Quick (ARP/ping) scans will still work without Nmap.
+</div>
+{% endif %}
+
+<!-- Scan Bar -->
+<div class="card" style="margin-bottom:16px">
+  <div class="card-header">
+    <div class="card-title">Network Scanner</div>
+  </div>
+  <div class="form-inline" style="flex-wrap:wrap;gap:10px">
+    <div class="form-group" style="margin:0">
+      <label class="form-label" style="margin-bottom:4px">Subnet / Target</label>
+      <input class="form-control font-mono" id="scan-subnet" value="192.168.1.0/24" placeholder="e.g. 192.168.1.0/24 or 10.0.0.1-50" style="width:240px">
+    </div>
+    <div class="form-group" style="margin:0">
+      <label class="form-label" style="margin-bottom:4px">Scan Type</label>
+      <select class="form-control" id="scan-type" style="width:200px">
+        <option value="quick">Quick (ARP/Ping)</option>
+        <option value="port">Port Scan</option>
+        <option value="full">Full Scan (Port + ARP)</option>
+        <option value="os">OS Detection</option>
+        <option value="service">Service/Version Detection</option>
+        <option value="vuln">Vulnerability Scan (slow)</option>
+      </select>
+    </div>
+    <div style="display:flex;align-items:flex-end;gap:8px">
+      <button class="btn btn-primary" id="scan-btn" onclick="startScan()">Start Scan</button>
+      <button class="btn btn-danger" id="stop-btn" style="display:none" onclick="stopScan()">Stop</button>
+      <div id="scan-status" style="display:flex;align-items:center;gap:8px;line-height:34px">
+        {% if scanning %}
+        <span class="badge badge-warn" id="scan-badge">Scanning...</span>
+        {% else %}
+        <span class="badge badge-disabled" id="scan-badge">Idle</span>
+        {% endif %}
+        <span class="text-muted" id="scan-msg">{{ results|length }} host(s) found</span>
+      </div>
+    </div>
+  </div>
+  <div style="margin-top:12px;display:none" id="scan-progress-wrap">
+    <div class="progress">
+      <div class="progress-bar" id="scan-progress-bar" style="width:0%;transition:width 0.5s"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Discovery Results -->
+<div class="card" style="margin-bottom:16px">
+  <div class="card-header">
+    <div>
+      <div class="card-title">Discovered Hosts</div>
+      <div class="card-sub" id="results-count">{{ results|length }} host(s) discovered</div>
+    </div>
+    <div class="btn-group">
+      <input class="form-control" id="search-input" placeholder="Filter hosts..." style="width:200px">
+      <button class="btn btn-secondary btn-sm" onclick="exportResults()">Export CSV</button>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table id="main-table">
+      <thead>
+        <tr>
+          <th>IP Address</th><th>MAC Address</th><th>Vendor</th><th>Hostname</th><th>OS</th><th>Open Ports</th><th>Discovered At</th><th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="results-tbody">
+        {% for host in results %}
+        <tr>
+          <td class="font-mono">{{ host.ip }}</td>
+          <td class="font-mono" style="font-size:11px">{{ host.mac or '—' }}</td>
+          <td class="text-muted">{{ host.vendor or '—' }}</td>
+          <td>{{ host.hostname or '—' }}</td>
+          <td>{{ host.os or '—' }}</td>
+          <td>
+            {% if host.ports %}
+            <span class="badge badge-info" style="cursor:pointer" title="{{ host.ports | join(', ') }}">{{ host.ports | length }} ports</span>
+            {% else %}
+            <span class="text-muted">—</span>
+            {% endif %}
+          </td>
+          <td class="text-muted">{{ host.discovered_at | default('—') }}</td>
+          <td>
+            <div class="btn-group">
+              <button class="btn btn-secondary btn-sm" onclick="pingHost('{{ host.ip }}')">Ping</button>
+              <button class="btn btn-secondary btn-sm" onclick="traceHost('{{ host.ip }}')">Trace</button>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr id="no-results-row"><td colspan="8" class="text-muted" style="text-align:center;padding:30px">No hosts discovered yet. Start a scan to discover network devices.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ARP Table -->
+<div class="card" style="margin-bottom:16px">
+  <div class="card-header">
+    <div>
+      <div class="card-title">ARP Table</div>
+      <div class="card-sub">Current ARP cache — {{ arp|length }} entries</div>
+    </div>
+    <button class="btn btn-secondary btn-sm" onclick="refreshARP()">Refresh ARP</button>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>IP Address</th><th>MAC Address</th><th>Interface</th><th>Type</th></tr></thead>
+      <tbody id="arp-tbody">
+        {% for entry in arp %}
+        <tr>
+          <td class="font-mono">{{ entry.ip }}</td>
+          <td class="font-mono">{{ entry.mac }}</td>
+          <td class="font-mono">{{ entry.interface or '—' }}</td>
+          <td><span class="badge badge-{{ 'info' if entry.type == 'dynamic' else 'disabled' }}">{{ entry.type or 'dynamic' }}</span></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="text-muted" style="text-align:center;padding:20px">ARP table is empty</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Network Tools -->
+<div class="grid grid-2">
+  <!-- Ping Tool -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Ping Tool</div>
+      <div class="card-sub">Send ICMP echo requests to a host</div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Target Host / IP</label>
+        <input class="form-control font-mono" id="ping-target" placeholder="e.g. 8.8.8.8 or example.com">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Count</label>
+        <input class="form-control" id="ping-count" type="number" value="4" min="1" max="100" style="width:80px">
+      </div>
+    </div>
+    <button class="btn btn-primary" onclick="runPing()">Ping</button>
+    <div id="ping-result" style="margin-top:16px;display:none">
+      <div class="form-label">Result</div>
+      <textarea class="form-control font-mono" id="ping-output" rows="8" readonly style="font-size:11px;margin-top:4px"></textarea>
+    </div>
+  </div>
+
+  <!-- Traceroute Tool -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Traceroute</div>
+      <div class="card-sub">Trace the network path to a destination</div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Target Host / IP</label>
+        <input class="form-control font-mono" id="trace-target" placeholder="e.g. 1.1.1.1 or google.com">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Max Hops</label>
+        <input class="form-control" id="trace-hops" type="number" value="30" min="1" max="64" style="width:80px">
+      </div>
+    </div>
+    <button class="btn btn-primary" onclick="runTraceroute()">Trace Route</button>
+    <div id="trace-result" style="margin-top:16px;display:none">
+      <div class="form-label">Result</div>
+      <div class="table-wrap" style="margin-top:4px">
+        <table>
+          <thead><tr><th>Hop</th><th>IP</th><th>Hostname</th><th>RTT</th></tr></thead>
+          <tbody id="trace-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let scanInterval = null;
+let scanRunning = false;
+
+async function startScan() {
+  const subnet = document.getElementById('scan-subnet').value.trim();
+  const scanType = document.getElementById('scan-type').value;
+  if (!subnet) { toast('Enter a subnet or target to scan', 'error'); return; }
+
+  scanRunning = true;
+  document.getElementById('scan-btn').style.display = 'none';
+  document.getElementById('stop-btn').style.display = '';
+  document.getElementById('scan-badge').textContent = 'Scanning...';
+  document.getElementById('scan-badge').className = 'badge badge-warn';
+  document.getElementById('scan-msg').textContent = 'Sending probes...';
+  document.getElementById('scan-progress-wrap').style.display = '';
+
+  let progress = 0;
+  const progressBar = document.getElementById('scan-progress-bar');
+  const progressTicker = setInterval(() => {
+    progress = Math.min(progress + Math.random() * 8, 85);
+    progressBar.style.width = progress + '%';
+  }, 500);
+
+  try {
+    const r = await POST('/api/discovery/scan', { subnet, scan_type: scanType });
+    clearInterval(progressTicker);
+    progressBar.style.width = '100%';
+    setTimeout(() => { document.getElementById('scan-progress-wrap').style.display = 'none'; progressBar.style.width = '0%'; }, 800);
+
+    document.getElementById('scan-badge').textContent = 'Complete';
+    document.getElementById('scan-badge').className = 'badge badge-allow';
+    document.getElementById('scan-msg').textContent = (r.hosts ? r.hosts.length : 0) + ' host(s) found';
+
+    if (r.hosts && r.hosts.length > 0) {
+      renderResults(r.hosts);
+    }
+    toast(`Scan complete — ${r.hosts ? r.hosts.length : 0} host(s) found`, 'success');
+  } catch (e) {
+    clearInterval(progressTicker);
+    document.getElementById('scan-progress-wrap').style.display = 'none';
+    document.getElementById('scan-badge').textContent = 'Error';
+    document.getElementById('scan-badge').className = 'badge badge-block';
+    toast('Scan error: ' + e.message, 'error');
+  } finally {
+    scanRunning = false;
+    document.getElementById('scan-btn').style.display = '';
+    document.getElementById('stop-btn').style.display = 'none';
+  }
+}
+
+function stopScan() {
+  POST('/api/discovery/scan/stop').catch(() => {});
+  scanRunning = false;
+  document.getElementById('scan-btn').style.display = '';
+  document.getElementById('stop-btn').style.display = 'none';
+  document.getElementById('scan-badge').textContent = 'Stopped';
+  document.getElementById('scan-badge').className = 'badge badge-disabled';
+  document.getElementById('scan-progress-wrap').style.display = 'none';
+  toast('Scan stopped', 'info');
+}
+
+function renderResults(hosts) {
+  const tbody = document.getElementById('results-tbody');
+  document.getElementById('results-count').textContent = hosts.length + ' host(s) discovered';
+  tbody.innerHTML = hosts.map(h => `
+    <tr>
+      <td class="font-mono">${h.ip}</td>
+      <td class="font-mono" style="font-size:11px">${h.mac || '—'}</td>
+      <td class="text-muted">${h.vendor || '—'}</td>
+      <td>${h.hostname || '—'}</td>
+      <td>${h.os || '—'}</td>
+      <td>${h.ports && h.ports.length ? `<span class="badge badge-info" title="${h.ports.join(', ')}">${h.ports.length} ports</span>` : '<span class="text-muted">—</span>'}</td>
+      <td class="text-muted">${h.discovered_at || '—'}</td>
+      <td>
+        <div class="btn-group">
+          <button class="btn btn-secondary btn-sm" onclick="pingHost('${h.ip}')">Ping</button>
+          <button class="btn btn-secondary btn-sm" onclick="traceHost('${h.ip}')">Trace</button>
+        </div>
+      </td>
+    </tr>`).join('');
+}
+
+async function refreshARP() {
+  try {
+    const r = await GET('/api/discovery/arp');
+    const tbody = document.getElementById('arp-tbody');
+    tbody.innerHTML = r.length ? r.map(e => `
+      <tr>
+        <td class="font-mono">${e.ip}</td>
+        <td class="font-mono">${e.mac}</td>
+        <td class="font-mono">${e.interface || '—'}</td>
+        <td><span class="badge badge-${e.type === 'static' ? 'disabled' : 'info'}">${e.type || 'dynamic'}</span></td>
+      </tr>`).join('') : '<tr><td colspan="4" class="text-muted" style="text-align:center;padding:20px">ARP table is empty</td></tr>';
+    toast('ARP table refreshed', 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+function pingHost(ip) {
+  document.getElementById('ping-target').value = ip;
+  runPing();
+}
+
+async function runPing() {
+  const target = document.getElementById('ping-target').value.trim();
+  const count = document.getElementById('ping-count').value || 4;
+  if (!target) { toast('Enter a target to ping', 'error'); return; }
+  const resultEl = document.getElementById('ping-result');
+  const outputEl = document.getElementById('ping-output');
+  resultEl.style.display = '';
+  outputEl.value = 'Pinging ' + target + '...';
+  try {
+    const r = await POST('/api/discovery/ping', { target, count: parseInt(count) });
+    outputEl.value = r.output || (r.reachable ? `${target} is reachable\nRTT: ${r.avg_rtt || '—'} ms` : `${target} is unreachable`);
+  } catch (e) {
+    outputEl.value = 'Ping error: ' + e.message;
+  }
+}
+
+function traceHost(ip) {
+  document.getElementById('trace-target').value = ip;
+  runTraceroute();
+}
+
+async function runTraceroute() {
+  const target = document.getElementById('trace-target').value.trim();
+  const maxHops = document.getElementById('trace-hops').value || 30;
+  if (!target) { toast('Enter a target for traceroute', 'error'); return; }
+  const resultEl = document.getElementById('trace-result');
+  const tbody = document.getElementById('trace-tbody');
+  resultEl.style.display = '';
+  tbody.innerHTML = '<tr><td colspan="4" class="text-muted" style="text-align:center;padding:20px">Running traceroute...</td></tr>';
+  try {
+    const r = await POST('/api/discovery/traceroute', { target, max_hops: parseInt(maxHops) });
+    if (r.hops && r.hops.length) {
+      tbody.innerHTML = r.hops.map(h => `
+        <tr>
+          <td>${h.hop}</td>
+          <td class="font-mono">${h.ip || '*'}</td>
+          <td class="text-muted">${h.hostname || '—'}</td>
+          <td class="font-mono">${h.rtt != null ? h.rtt.toFixed(2) + ' ms' : '*'}</td>
+        </tr>`).join('');
+    } else {
+      tbody.innerHTML = '<tr><td colspan="4" class="text-muted" style="text-align:center;padding:12px">No route data returned</td></tr>';
+    }
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" class="text-muted" style="text-align:center;padding:12px">Traceroute error: ${e.message}</td></tr>`;
+  }
+}
+
+function exportResults() {
+  const rows = document.querySelectorAll('#results-tbody tr');
+  if (!rows.length) { toast('No results to export', 'error'); return; }
+  const headers = ['IP', 'MAC', 'Vendor', 'Hostname', 'OS', 'Open Ports', 'Discovered At'];
+  const lines = [headers.join(',')];
+  rows.forEach(row => {
+    const cells = row.querySelectorAll('td');
+    if (cells.length < 7) return;
+    const vals = Array.from(cells).slice(0, 7).map(c => '"' + c.textContent.trim().replace(/"/g, '""') + '"');
+    lines.push(vals.join(','));
+  });
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'aegis-discovery.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+  toast('Exported CSV', 'success');
+}
+</script>
+{% endblock %}

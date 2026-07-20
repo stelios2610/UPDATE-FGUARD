@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}{% endblock %} — FGUARD UTC</title>
+  <link rel="stylesheet" href="/static/css/aegis.css">
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+
+<!-- ══ SIDEBAR ════════════════════════════════════════════════════════════════ -->
+<nav class="sidebar">
+  <!-- Logo -->
+  <div class="sidebar-logo">
+    <span class="shield">🛡</span>
+    <div>
+      <div class="brand">FGUARD UTC</div>
+      <div style="font-size:9px;color:#555;letter-spacing:0.5px">NETWORK SECURITY</div>
+    </div>
+  </div>
+
+  <!-- Dashboard (top-level, always visible) -->
+  <a href="/" class="nav-item-top {% if active=='dashboard' %}active{% endif %}">
+    <span class="icon">📊</span> Dashboard
+  </a>
+
+  <!-- ── NETWORK ──────────────────────────────────────────────────────────── -->
+  <div class="nav-group {% if active in ['net-interfaces','net-vlans','net-routes','net-dhcp','net-dns','net-nat','net-qos','net-dmz'] %}open{% endif %}" id="grp-network">
+    <div class="nav-group-header" onclick="toggleGroup('grp-network')">
+      <span class="nav-group-icon">🌐</span>
+      <span>Network</span>
+      <span class="nav-group-arrow">▶</span>
+    </div>
+    <div class="nav-group-items">
+      <a href="/network?tab=interfaces" class="nav-item {% if active=='net-interfaces' %}active{% endif %}">
+        <span class="nav-dot"></span> Interfaces
+      </a>
+      <a href="/network?tab=vlans" class="nav-item {% if active=='net-vlans' %}active{% endif %}">
+        <span class="nav-dot"></span> VLANs
+      </a>
+      <a href="/network?tab=dmz" class="nav-item {% if active=='net-dmz' %}active{% endif %}">
+        <span class="nav-dot"></span> DMZ
+      </a>
+      <a href="/network?tab=routes" class="nav-item {% if active=='net-routes' %}active{% endif %}">
+        <span class="nav-dot"></span> Static Routes
+      </a>
+      <a href="/network?tab=dhcp" class="nav-item {% if active=='net-dhcp' %}active{% endif %}">
+        <span class="nav-dot"></span> DHCP Server
+      </a>
+      <a href="/network?tab=dns" class="nav-item {% if active=='net-dns' %}active{% endif %}">
+        <span class="nav-dot"></span> DNS
+      </a>
+      <a href="/network?tab=nat" class="nav-item {% if active=='net-nat' %}active{% endif %}">
+        <span class="nav-dot"></span> NAT
+      </a>
+      <a href="/network?tab=qos" class="nav-item {% if active=='net-qos' %}active{% endif %}">
+        <span class="nav-dot"></span> QoS / Traffic
+      </a>
+      <a href="/network?tab=multiwan" class="nav-item {% if active=='net-multiwan' %}active{% endif %}">
+        <span class="nav-dot"></span> Multi-WAN
+      </a>
+      <a href="/ha" class="nav-item {% if active=='ha' %}active{% endif %}">
+        <span class="nav-dot"></span> High Availability
+      </a>
+    </div>
+  </div>
+
+  <!-- ── FIREWALL ─────────────────────────────────────────────────────────── -->
+  <div class="nav-group {% if active in ['firewall','appcontrol','proxies','blocked'] %}open{% endif %}" id="grp-firewall">
+    <div class="nav-group-header" onclick="toggleGroup('grp-firewall')">
+      <span class="nav-group-icon">🧱</span>
+      <span>Firewall</span>
+      <span class="nav-group-arrow">▶</span>
+    </div>
+    <div class="nav-group-items">
+      <a href="/firewall" class="nav-item {% if active=='firewall' %}active{% endif %}">
+        <span class="nav-dot"></span> Policies
+      </a>
+      <a href="/appcontrol" class="nav-item {% if active=='appcontrol' %}active{% endif %}">
+        <span class="nav-dot"></span> Application Control
+      </a>
+      <a href="/proxies" class="nav-item {% if active=='proxies' %}active{% endif %}">
+        <span class="nav-dot"></span> Proxy Rules
+      </a>
+      <a href="/blocked" class="nav-item {% if active=='blocked' %}active{% endif %}">
+        <span class="nav-dot"></span> Blocked Sites
+      </a>
+    </div>
+  </div>
+
+  <!-- ── SECURITY SERVICES ────────────────────────────────────────────────── -->
+  <div class="nav-group {% if active in ['webfilter','ips','security','discovery'] %}open{% endif %}" id="grp-security">
+    <div class="nav-group-header" onclick="toggleGroup('grp-security')">
+      <span class="nav-group-icon">🔰</span>
+      <span>Security Services</span>
+      <span class="nav-group-arrow">▶</span>
+    </div>
+    <div class="nav-group-items">
+      <a href="/webfilter" class="nav-item {% if active=='webfilter' %}active{% endif %}">
+        <span class="nav-dot"></span> WebBlocker
+      </a>
+      <a href="/ips" class="nav-item {% if active=='ips' %}active{% endif %}">
+        <span class="nav-dot"></span> Intrusion Prevention
+      </a>
+      <a href="/security?tab=av" class="nav-item {% if active=='security-av' %}active{% endif %}">
+        <span class="nav-dot"></span> Gateway AntiVirus
+      </a>
+      <a href="/security?tab=rep" class="nav-item {% if active=='security-rep' %}active{% endif %}">
+        <span class="nav-dot"></span> Reputation Defense
+      </a>
+      <a href="/security?tab=ddos" class="nav-item {% if active=='security-ddos' %}active{% endif %}">
+        <span class="nav-dot"></span> Anti-DDoS
+      </a>
+      <a href="/security?tab=geo" class="nav-item {% if active=='security-geo' %}active{% endif %}">
+        <span class="nav-dot"></span> GeoIP Blocking
+      </a>
+      <a href="/security?tab=dlp" class="nav-item {% if active=='security-dlp' %}active{% endif %}">
+        <span class="nav-dot"></span> Data Loss Prevention
+      </a>
+      <a href="/discovery" class="nav-item {% if active=='discovery' %}active{% endif %}">
+        <span class="nav-dot"></span> Network Discovery
+      </a>
+    </div>
+  </div>
+
+  <!-- ── VPN ─────────────────────────────────────────────────────────────── -->
+  <div class="nav-group {% if active in ['vpn','vpn-ssl','vpn-bov','vpn-users'] %}open{% endif %}" id="grp-vpn">
+    <div class="nav-group-header" onclick="toggleGroup('grp-vpn')">
+      <span class="nav-group-icon">🔒</span>
+      <span>VPN</span>
+      <span class="nav-group-arrow">▶</span>
+      {% if connected_vpns > 0 %}
+      <span style="margin-left:4px;background:var(--success);color:#fff;border-radius:10px;padding:1px 6px;font-size:10px">{{ connected_vpns }}</span>
+      {% endif %}
+    </div>
+    <div class="nav-group-items">
+      <a href="/vpn#bov" class="nav-item {% if active=='vpn-bov' %}active{% endif %}">
+        <span class="nav-dot"></span> Branch Office VPN
+      </a>
+      <a href="/vpn#ssl" class="nav-item {% if active=='vpn-ssl' %}active{% endif %}">
+        <span class="nav-dot"></span> Mobile VPN with SSL
+      </a>
+      <a href="/vpn#mobile" class="nav-item {% if active=='vpn-mobile' %}active{% endif %}">
+        <span class="nav-dot"></span> Remote Access VPN
+      </a>
+      <a href="/vpn#users" class="nav-item {% if active=='vpn-users' %}active{% endif %}">
+        <span class="nav-dot"></span> VPN Users
+      </a>
+    </div>
+  </div>
+
+  <!-- ── AUTHENTICATION ───────────────────────────────────────────────────── -->
+  <div class="nav-group {% if active in ['auth','certificates'] %}open{% endif %}" id="grp-auth">
+    <div class="nav-group-header" onclick="toggleGroup('grp-auth')">
+      <span class="nav-group-icon">👤</span>
+      <span>Authentication</span>
+      <span class="nav-group-arrow">▶</span>
+    </div>
+    <div class="nav-group-items">
+      <a href="/auth" class="nav-item {% if active=='auth' %}active{% endif %}">
+        <span class="nav-dot"></span> Users & Groups
+      </a>
+      <a href="/certificates" class="nav-item {% if active=='certificates' %}active{% endif %}">
+        <span class="nav-dot"></span> Certificates
+      </a>
+    </div>
+  </div>
+
+  <!-- ── MONITORING ───────────────────────────────────────────────────────── -->
+  <div class="nav-group {% if active in ['monitor','logs'] %}open{% endif %}" id="grp-monitor">
+    <div class="nav-group-header" onclick="toggleGroup('grp-monitor')">
+      <span class="nav-group-icon">📡</span>
+      <span>Monitoring</span>
+      <span class="nav-group-arrow">▶</span>
+    </div>
+    <div class="nav-group-items">
+      <a href="/monitor" class="nav-item {% if active=='monitor' %}active{% endif %}">
+        <span class="nav-dot"></span> Traffic Monitor
+      </a>
+      <a href="/logs" class="nav-item {% if active=='logs' %}active{% endif %}">
+        <span class="nav-dot"></span> Logs & Reports
+      </a>
+    </div>
+  </div>
+
+  <!-- ── SYSTEM ───────────────────────────────────────────────────────────── -->
+  <div class="nav-group {% if active in ['settings','settings-log','settings-email','updates'] %}open{% endif %}" id="grp-system">
+    <div class="nav-group-header" onclick="toggleGroup('grp-system')">
+      <span class="nav-group-icon">⚙️</span>
+      <span>System</span>
+      <span class="nav-group-arrow">▶</span>
+    </div>
+    <div class="nav-group-items">
+      <a href="/settings" class="nav-item {% if active=='settings' %}active{% endif %}">
+        <span class="nav-dot"></span> System Settings
+      </a>
+      <a href="/settings#logging" class="nav-item {% if active=='settings-log' %}active{% endif %}">
+        <span class="nav-dot"></span> Logging
+      </a>
+      <a href="/settings#email" class="nav-item {% if active=='settings-email' %}active{% endif %}">
+        <span class="nav-dot"></span> Notifications
+      </a>
+      <a href="/updates" class="nav-item {% if active=='updates' %}active{% endif %}" style="display:flex;justify-content:space-between;align-items:center">
+        <span><span class="nav-dot"></span> Updates</span>
+        {% if update_available %}<span style="background:var(--success);color:#fff;font-size:9px;padding:1px 5px;border-radius:8px;font-weight:700">NEW</span>{% endif %}
+      </a>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="sidebar-footer">
+    <div class="fw-status" id="sb-fw-status">● Firewall Active</div>
+    {% if connected_vpns > 0 %}
+    <div style="color:var(--success);margin-top:3px">● {{ connected_vpns }} VPN Connected</div>
+    {% endif %}
+    {% if not is_root %}
+    <div style="color:var(--warning);margin-top:3px;font-size:10px">⚠ Not Administrator</div>
+    {% endif %}
+    <div style="color:#444;margin-top:5px;font-size:10px">FGUARD UTC v1.0.0</div>
+    <form method="POST" action="/logout" style="margin-top:8px">
+      <button type="submit" style="display:block;width:100%;background:none;border:1px solid #30363d;border-radius:4px;color:#8b949e;font-size:11px;padding:4px 8px;text-align:center;cursor:pointer;transition:all 0.15s"
+              onmouseover="this.style.color='#e74c3c';this.style.borderColor='#e74c3c'"
+              onmouseout="this.style.color='#8b949e';this.style.borderColor='#30363d'">
+        ⏻ Sign Out
+      </button>
+    </form>
+  </div>
+</nav>
+
+<!-- ══ MAIN ═══════════════════════════════════════════════════════════════════ -->
+<div class="main">
+  <!-- Topbar -->
+  <div class="topbar">
+    <span class="topbar-title">{% block page_title %}{% endblock %}</span>
+    <span class="topbar-stat">Connections: <span id="stat-conns">{{ conn_count|default(0) }}</span></span>
+    <span class="topbar-stat danger">Blocked: <span id="stat-blocked">{{ stats.blocked }}</span></span>
+    <span class="topbar-stat warning">Threats: <span id="stat-threats">{{ threat_count }}</span></span>
+    <span class="topbar-stat">CPU: <span id="stat-cpu">—</span></span>
+    <span class="topbar-stat">Mem: <span id="stat-mem">—</span></span>
+  </div>
+
+  <!-- License Banner -->
+  {% if lic_status == 'expired' %}
+  <div style="background:#c0392b;color:#fff;padding:9px 20px;font-size:13px;text-align:center;font-weight:500">
+    &#9888; Your FGUARD UTC license has expired. Web Filter, Application Control and GeoIP Blocking have been disabled.
+    Please contact your provider to renew.
+  </div>
+  {% elif lic_status == 'expiring' %}
+  <div style="background:#e67e22;color:#fff;padding:9px 20px;font-size:13px;text-align:center;font-weight:500">
+    &#9888; Your FGUARD UTC license expires in <strong>{{ lic_days }} days</strong> ({{ lic_expires }}).
+    Please contact your provider to renew.
+  </div>
+  {% elif lic_status in ('missing', 'invalid') %}
+  <div style="background:#7f8c8d;color:#fff;padding:9px 20px;font-size:13px;text-align:center;font-weight:500">
+    &#9888; No valid FGUARD UTC license found. Please contact your provider.
+  </div>
+  {% endif %}
+
+  <!-- Content -->
+  <div class="content">
+    {% block content %}{% endblock %}
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="/static/js/aegis.js"></script>
+<script>
+function toggleGroup(id) {
+  const grp = document.getElementById(id);
+  grp.classList.toggle('open');
+  // Save state to localStorage
+  const open = [...document.querySelectorAll('.nav-group.open')].map(g => g.id);
+  localStorage.setItem('navOpen', JSON.stringify(open));
+}
+
+// Restore open state
+document.addEventListener('DOMContentLoaded', () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem('navOpen') || '[]');
+    saved.forEach(id => {
+      const g = document.getElementById(id);
+      if (g) g.classList.add('open');
+    });
+  } catch(e) {}
+
+  // Always keep active group open
+  const activeItem = document.querySelector('.nav-item.active, .nav-item-top.active');
+  if (activeItem) {
+    const grp = activeItem.closest('.nav-group');
+    if (grp) grp.classList.add('open');
+  }
+});
+</script>
+
+{% block extra_js %}{% endblock %}
+
+<script>
+// Idle session timeout — 10 minutes of no activity → auto logout
+(function() {
+  var IDLE_MS = 10 * 60 * 1000;
+  var timer;
+  function reset() {
+    clearTimeout(timer);
+    timer = setTimeout(function() {
+      // Show brief notice then submit logout
+      document.body.style.opacity = '0.4';
+      var f = document.createElement('form');
+      f.method = 'POST'; f.action = '/logout';
+      document.body.appendChild(f);
+      f.submit();
+    }, IDLE_MS);
+  }
+  ['mousemove','keydown','click','scroll','touchstart'].forEach(function(ev) {
+    document.addEventListener(ev, reset, {passive: true});
+  });
+  reset();
+})();
+</script>
+</body>
+</html>

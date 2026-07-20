@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FGUARD UTC — Login</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: #0d1117;
+      color: #e0e6ed;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    .login-wrap {
+      width: 100%;
+      max-width: 380px;
+      padding: 24px;
+    }
+    .logo {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+    .logo .shield { font-size: 48px; display: block; margin-bottom: 8px; }
+    .logo .brand { font-size: 24px; font-weight: 700; color: #c0392b; letter-spacing: 1px; }
+    .logo .sub { font-size: 12px; color: #555; margin-top: 4px; letter-spacing: 1px; }
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 28px;
+    }
+    .card h2 { font-size: 16px; margin-bottom: 20px; color: #8b949e; font-weight: 400; text-align: center; }
+    .form-group { margin-bottom: 16px; }
+    label { display: block; font-size: 12px; color: #8b949e; margin-bottom: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+    input {
+      width: 100%;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #e0e6ed;
+      padding: 10px 12px;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input:focus { border-color: #c0392b; }
+    .btn {
+      width: 100%;
+      background: #c0392b;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 11px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 8px;
+      transition: background 0.15s;
+    }
+    .btn:hover { background: #e74c3c; }
+    .error {
+      background: rgba(192,57,43,0.15);
+      border: 1px solid rgba(192,57,43,0.4);
+      border-radius: 6px;
+      padding: 10px 14px;
+      font-size: 13px;
+      color: #e74c3c;
+      margin-bottom: 16px;
+      text-align: center;
+    }
+    .footer { text-align: center; margin-top: 20px; font-size: 11px; color: #333; }
+  </style>
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="logo">
+      <span class="shield">🛡</span>
+      <div class="brand">FGUARD UTC</div>
+      <div class="sub">NETWORK SECURITY</div>
+    </div>
+    <div class="card">
+      <h2>Sign in to continue</h2>
+      {% if error %}
+      <div class="error">{{ error }}</div>
+      {% endif %}
+      <form method="POST" action="/login">
+        <div class="form-group">
+          <label>Username</label>
+          <input type="text" name="username" placeholder="admin" autofocus autocomplete="username">
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" name="password" placeholder="••••••••" autocomplete="current-password">
+        </div>
+        <button type="submit" class="btn">Sign In</button>
+      </form>
+    </div>
+    <div class="footer">FGUARD UTC v1.0.0</div>
+  </div>
+</body>
+</html>

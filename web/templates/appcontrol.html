@@ -1,0 +1,327 @@
+{% extends "base.html" %}
+{% block title %}Application Control{% endblock %}
+{% block page_title %}Application Control{% endblock %}
+{% set active = "appcontrol" %}
+
+{% block content %}
+
+{% if lic_status in ('expired', 'missing', 'invalid') %}
+<div style="background:var(--bg-card);border:2px solid var(--danger);border-radius:8px;padding:28px 24px;text-align:center">
+  <div style="font-size:36px;margin-bottom:8px">🔒</div>
+  <div style="font-size:17px;font-weight:700;color:var(--danger);margin-bottom:6px">Application Control — License Required</div>
+  <div style="color:var(--text-muted);font-size:14px;max-width:460px;margin:0 auto">
+    Application Control is disabled because your FGUARD UTC license is
+    {% if lic_status == 'expired' %}expired{% else %}not activated{% endif %}.
+    Your existing rules are preserved and will resume automatically when the license is renewed.
+  </div>
+  <a href="/settings" class="btn btn-primary" style="margin-top:16px;display:inline-block">Go to Settings → License</a>
+</div>
+{% else %}
+
+<!-- Quick App Block Panel -->
+<div class="card" style="margin-bottom:16px">
+  <div class="card-header">
+    <div>
+      <div class="card-title">Quick App Block</div>
+      <div class="card-sub">Block popular applications at the gateway — DNS + port based, affects all LAN clients</div>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;padding:4px 0">
+    {% for name, cfg in predefined_apps.items() %}
+    {% set is_blocked = app_block_status.get(name, false) %}
+    <label style="display:flex;align-items:center;gap:12px;padding:12px 16px;background:var(--bg-secondary);border:1px solid {{ 'var(--danger)' if is_blocked else 'var(--border)' }};border-radius:8px;cursor:pointer;transition:border-color .15s">
+      <input type="checkbox" id="appblock-{{ loop.index }}"
+             data-app="{{ name }}"
+             {{ 'checked' if is_blocked else '' }}
+             onchange="toggleAppBlock(this)">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:600">{{ cfg.icon }} {{ name }}</div>
+        <div class="text-muted" style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ cfg.description }}</div>
+        <div style="font-size:10px;margin-top:2px">
+          {% if is_blocked %}
+          <span style="color:var(--danger);font-weight:600">BLOCKED</span>
+          {% else %}
+          <span class="text-muted">Allowed</span>
+          {% endif %}
+        </div>
+      </div>
+    </label>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <div>
+      <div class="card-title">Application Rules</div>
+      <div class="card-sub">{{ rules|length }} rule(s) · Control network access per application</div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="openModal('add-app-modal')">+ Add Rule</button>
+      <button class="btn btn-secondary" onclick="syncAppRules()">Sync to System</button>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <input id="search-input" class="form-control" style="max-width:260px" placeholder="Search app rules...">
+  </div>
+
+  <div class="table-wrap">
+    <table id="main-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Application Name</th>
+          <th>Executable Path</th>
+          <th>Action</th>
+          <th>Direction</th>
+          <th>Status</th>
+          <th>Description</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rules %}
+        <tr id="apprule-{{ r.id }}">
+          <td class="text-muted">{{ r.id }}</td>
+          <td>{{ r.name }}</td>
+          <td class="font-mono">{{ r.exe_path }}</td>
+          <td>
+            <span class="badge badge-{{ 'allow' if r.action == 'ALLOW' else 'block' }}">{{ r.action }}</span>
+          </td>
+          <td>{{ r.direction }}</td>
+          <td>
+            <span class="badge badge-{{ 'allow' if r.enabled else 'disabled' }}">
+              {{ 'Enabled' if r.enabled else 'Disabled' }}
+            </span>
+          </td>
+          <td class="text-muted">{{ r.description or '—' }}</td>
+          <td>
+            <div class="btn-group">
+              <button class="btn btn-danger btn-sm" onclick="deleteAppRule({{ r.id }})">✕ Delete</button>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="8" class="text-muted" style="text-align:center;padding:30px">
+            No application rules defined. Add a rule to control app network access.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Running Applications -->
+<div class="card">
+  <div class="card-header">
+    <div>
+      <div class="card-title">Running Applications</div>
+      <div class="card-sub">{{ running|length }} application(s) with active network connections</div>
+    </div>
+    <button class="btn btn-secondary btn-sm" onclick="refreshRunning()">Refresh</button>
+  </div>
+  <div class="table-wrap">
+    <table id="running-table">
+      <thead>
+        <tr>
+          <th>PID</th>
+          <th>Application</th>
+          <th>Executable</th>
+          <th>Connections</th>
+          <th>Quick Action</th>
+        </tr>
+      </thead>
+      <tbody id="running-tbody">
+        {% for app in running %}
+        <tr>
+          <td class="font-mono text-muted">{{ app.pid }}</td>
+          <td>{{ app.name }}</td>
+          <td class="font-mono" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ app.exe }}">{{ app.exe }}</td>
+          <td>
+            <span class="badge badge-info">{{ app.connections }}</span>
+          </td>
+          <td>
+            <div class="btn-group">
+              <button class="btn btn-success btn-sm" onclick="quickAllow({{ app|tojson }})">Allow</button>
+              <button class="btn btn-danger btn-sm" onclick="quickBlock({{ app|tojson }})">Block</button>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="5" class="text-muted" style="text-align:center;padding:20px">No running apps with network connections detected.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Add App Rule Modal -->
+<div class="modal-overlay" id="add-app-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Add Application Rule</span>
+      <button class="modal-close" onclick="closeModal('add-app-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Application Name *</label>
+        <input class="form-control" id="app-name" placeholder="e.g. Chrome, Firefox, python.exe">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Executable Path *</label>
+        <input class="form-control" id="app-exe" placeholder="e.g. C:\Program Files\Google\Chrome\chrome.exe">
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Action</label>
+          <select class="form-control" id="app-action">
+            <option>ALLOW</option>
+            <option>BLOCK</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Direction</label>
+          <select class="form-control" id="app-direction">
+            <option>BOTH</option>
+            <option>IN</option>
+            <option>OUT</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Description</label>
+        <input class="form-control" id="app-desc" placeholder="Optional note">
+      </div>
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="app-enabled" checked> Enabled
+        </label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('add-app-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveAppRule()">Save Rule</button>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+async function saveAppRule() {
+  const name = document.getElementById('app-name').value.trim();
+  const exe = document.getElementById('app-exe').value.trim();
+  if (!name) { toast('Application name is required', 'error'); return; }
+  if (!exe) { toast('Executable path is required', 'error'); return; }
+  const data = {
+    name,
+    exe_path: exe,
+    action: document.getElementById('app-action').value,
+    direction: document.getElementById('app-direction').value,
+    enabled: document.getElementById('app-enabled').checked ? 1 : 0,
+    description: document.getElementById('app-desc').value.trim(),
+  };
+  try {
+    await POST('/api/appcontrol/rules', data);
+    toast('Rule saved', 'success');
+    closeModal('add-app-modal');
+    setTimeout(() => location.reload(), 600);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function deleteAppRule(id) {
+  if (!confirm2('Delete this application rule?')) return;
+  try {
+    await DELETE(`/api/appcontrol/rules/${id}`);
+    document.getElementById(`apprule-${id}`)?.remove();
+    toast('Rule deleted', 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function syncAppRules() {
+  try {
+    const r = await POST('/api/appcontrol/sync');
+    toast(`Synced ${r.synced}/${r.total} app rules to system`, 'success');
+  } catch (e) { toast('Sync error: ' + e.message, 'error'); }
+}
+
+async function refreshRunning() {
+  try {
+    const apps = await GET('/api/appcontrol/running');
+    const tbody = document.getElementById('running-tbody');
+    if (!apps.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="text-muted" style="text-align:center;padding:20px">No running apps with network connections detected.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = apps.map(app => `
+      <tr>
+        <td class="font-mono text-muted">${app.pid}</td>
+        <td>${app.name}</td>
+        <td class="font-mono" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${app.exe}">${app.exe}</td>
+        <td><span class="badge badge-info">${app.connections}</span></td>
+        <td>
+          <div class="btn-group">
+            <button class="btn btn-success btn-sm" onclick='quickAllow(${JSON.stringify(app)})'>Allow</button>
+            <button class="btn btn-danger btn-sm" onclick='quickBlock(${JSON.stringify(app)})'>Block</button>
+          </div>
+        </td>
+      </tr>`).join('');
+  } catch (e) { toast('Refresh error: ' + e.message, 'error'); }
+}
+
+function quickAllow(app) {
+  document.getElementById('app-name').value = app.name;
+  document.getElementById('app-exe').value = app.exe;
+  document.getElementById('app-action').value = 'ALLOW';
+  document.getElementById('app-direction').value = 'BOTH';
+  document.getElementById('app-desc').value = 'Auto-created from running apps';
+  document.getElementById('app-enabled').checked = true;
+  openModal('add-app-modal');
+}
+
+function quickBlock(app) {
+  document.getElementById('app-name').value = app.name;
+  document.getElementById('app-exe').value = app.exe;
+  document.getElementById('app-action').value = 'BLOCK';
+  document.getElementById('app-direction').value = 'BOTH';
+  document.getElementById('app-desc').value = 'Auto-created from running apps';
+  document.getElementById('app-enabled').checked = true;
+  openModal('add-app-modal');
+}
+
+document.getElementById('add-app-modal').addEventListener('click', e => {
+  if (e.target === document.getElementById('add-app-modal')) closeModal('add-app-modal');
+});
+
+async function toggleAppBlock(cb) {
+  const app = cb.dataset.app;
+  const block = cb.checked;
+  const label = cb.closest('label');
+  cb.disabled = true;
+  try {
+    if (block) {
+      await POST(`/api/appcontrol/block/${encodeURIComponent(app)}`, {});
+      toast(`${app} blocked`, 'success');
+      label.style.borderColor = 'var(--danger)';
+      label.querySelector('div > div:last-child').innerHTML = '<span style="color:var(--danger);font-weight:600">BLOCKED</span>';
+    } else {
+      await DELETE(`/api/appcontrol/block/${encodeURIComponent(app)}`);
+      toast(`${app} unblocked`, 'success');
+      label.style.borderColor = 'var(--border)';
+      label.querySelector('div > div:last-child').innerHTML = '<span class="text-muted">Allowed</span>';
+    }
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+    cb.checked = !block;
+  } finally {
+    cb.disabled = false;
+  }
+}
+</script>
+{% endblock %}

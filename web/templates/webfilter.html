@@ -1,0 +1,265 @@
+{% extends "base.html" %}
+{% block title %}Web Filter{% endblock %}
+{% block page_title %}Web Filter{% endblock %}
+{% set active = "webfilter" %}
+
+{% block content %}
+
+{% if lic_status in ('expired', 'missing', 'invalid') %}
+<div style="position:relative;margin-bottom:16px">
+  <div style="background:var(--bg-card);border:2px solid var(--danger);border-radius:8px;padding:28px 24px;text-align:center">
+    <div style="font-size:36px;margin-bottom:8px">🔒</div>
+    <div style="font-size:17px;font-weight:700;color:var(--danger);margin-bottom:6px">WebBlocker — License Required</div>
+    <div style="color:var(--text-muted);font-size:14px;max-width:460px;margin:0 auto">
+      Web Filter is disabled because your FGUARD UTC license is
+      {% if lic_status == 'expired' %}expired{% else %}not activated{% endif %}.
+      Your existing rules are preserved and will resume automatically when the license is renewed.
+    </div>
+    <a href="/settings#license" onclick="location.href='/settings';setTimeout(()=>{if(window.switchTab)switchTab('license')},400);return false;"
+       class="btn btn-primary" style="margin-top:16px;display:inline-block">Go to Settings → License</a>
+  </div>
+</div>
+{% else %}
+
+{% if not is_root %}
+<div class="alert alert-warning">
+  ⚠ FGUARD UTC is not running as administrator. Applying host-based web filters requires elevated privileges.
+</div>
+{% endif %}
+
+<!-- Status Bar -->
+<div class="card" style="margin-bottom:12px">
+  <div class="card-header" style="margin-bottom:0">
+    <div>
+      <div class="card-title">Web Filter Status</div>
+      <div class="card-sub">
+        Host-based blocking via system hosts file ·
+        <span id="wf-state-badge">
+          {% if wf_state %}
+          <span class="badge badge-allow">Active</span>
+          {% else %}
+          <span class="badge badge-disabled">Inactive</span>
+          {% endif %}
+        </span>
+        · <span id="wf-count">{{ wf_count }}</span> entries applied
+      </div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-success" onclick="applyHosts()">Apply to Hosts File</button>
+      <button class="btn btn-danger" onclick="removeHosts()">Remove from Hosts</button>
+    </div>
+  </div>
+</div>
+
+<!-- Domain Filters Table -->
+<div class="card">
+  <div class="card-header">
+    <div>
+      <div class="card-title">Domain Filters</div>
+      <div class="card-sub">{{ filters|length }} filter(s) · Wildcards supported (e.g. *.ads.example.com)</div>
+    </div>
+    <button class="btn btn-primary" onclick="openModal('add-filter-modal')">+ Add Filter</button>
+  </div>
+
+  <div class="toolbar">
+    <input id="search-input" class="form-control" style="max-width:260px" placeholder="Search domains...">
+    <div class="toolbar-right">
+      <select class="form-control" id="action-filter" onchange="applyActionFilter()" style="max-width:140px">
+        <option value="">All Actions</option>
+        <option value="BLOCK">BLOCK</option>
+        <option value="ALLOW">ALLOW</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table id="main-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Pattern / Domain</th>
+          <th>Category</th>
+          <th>Action</th>
+          <th>Status</th>
+          <th>Description</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for f in filters %}
+        <tr id="wf-{{ f.id }}">
+          <td class="text-muted">{{ f.id }}</td>
+          <td class="font-mono">{{ f.pattern }}</td>
+          <td><span class="badge badge-info">{{ f.category }}</span></td>
+          <td><span class="badge badge-{{ 'block' if f.action == 'BLOCK' else 'allow' }}">{{ f.action }}</span></td>
+          <td>
+            <span class="badge badge-{{ 'allow' if f.enabled else 'disabled' }}">
+              {{ 'Enabled' if f.enabled else 'Disabled' }}
+            </span>
+          </td>
+          <td class="text-muted">{{ f.description or '—' }}</td>
+          <td>
+            <button class="btn btn-danger btn-sm" onclick="deleteFilter({{ f.id }})">✕</button>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="7" class="text-muted" style="text-align:center;padding:30px">
+            No domain filters configured. Add a filter or enable a category below.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Category Toggles -->
+<div class="card">
+  <div class="card-header">
+    <div>
+      <div class="card-title">Category Blocking</div>
+      <div class="card-sub">Enable predefined categories to block entire groups of domains</div>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px">
+    {% for cat in categories %}
+    <label style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;cursor:pointer">
+      <input type="checkbox" id="cat-{{ loop.index }}"
+             data-cat="{{ cat.name }}"
+             {{ 'checked' if cat.enabled else '' }}
+             onchange="toggleCategory(this)">
+      <div>
+        <div style="font-size:13px;font-weight:600">{{ cat.name }}</div>
+        <div class="text-muted" style="font-size:11px">{{ 'Enabled' if cat.enabled else 'Disabled' }}</div>
+      </div>
+    </label>
+    {% else %}
+    <div class="text-muted">No categories available.</div>
+    {% endfor %}
+  </div>
+</div>
+
+<!-- Add Filter Modal -->
+<div class="modal-overlay" id="add-filter-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Add Domain Filter</span>
+      <button class="modal-close" onclick="closeModal('add-filter-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Domain / Pattern *</label>
+        <input class="form-control" id="filter-pattern" placeholder="e.g. ads.example.com or *.tracking.com">
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Category</label>
+          <select class="form-control" id="filter-category">
+            <option>Custom</option>
+            {% for cat in categories %}
+            <option>{{ cat.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Action</label>
+          <select class="form-control" id="filter-action">
+            <option>BLOCK</option>
+            <option>ALLOW</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Description</label>
+        <input class="form-control" id="filter-desc" placeholder="Optional">
+      </div>
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="filter-enabled" checked> Enabled
+        </label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('add-filter-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveFilter()">Add Filter</button>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+async function saveFilter() {
+  const pattern = document.getElementById('filter-pattern').value.trim();
+  if (!pattern) { toast('Domain/pattern is required', 'error'); return; }
+  const data = {
+    pattern,
+    category: document.getElementById('filter-category').value,
+    action: document.getElementById('filter-action').value,
+    enabled: document.getElementById('filter-enabled').checked ? 1 : 0,
+    description: document.getElementById('filter-desc').value.trim(),
+  };
+  try {
+    await POST('/api/webfilter', data);
+    toast('Filter added', 'success');
+    closeModal('add-filter-modal');
+    setTimeout(() => location.reload(), 600);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function deleteFilter(id) {
+  if (!confirm2('Remove this domain filter?')) return;
+  try {
+    await DELETE(`/api/webfilter/${id}`);
+    document.getElementById(`wf-${id}`)?.remove();
+    toast('Filter removed', 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function applyHosts() {
+  try {
+    const r = await POST('/api/webfilter/apply');
+    if (r.status === 'ok') toast(`Hosts file updated: ${r.message || 'Done'}`, 'success');
+    else toast('Apply error: ' + (r.message || 'unknown'), 'error');
+    setTimeout(() => location.reload(), 800);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function removeHosts() {
+  if (!confirm2('Remove FGUARD UTC entries from the hosts file?')) return;
+  try {
+    const r = await POST('/api/webfilter/remove');
+    if (r.status === 'ok') toast('Hosts entries removed', 'success');
+    else toast('Remove error: ' + (r.message || 'unknown'), 'error');
+    setTimeout(() => location.reload(), 800);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+function applyActionFilter() {
+  const val = document.getElementById('action-filter').value.toLowerCase();
+  document.querySelectorAll('#main-table tbody tr').forEach(row => {
+    row.style.display = (!val || row.textContent.toLowerCase().includes(val)) ? '' : 'none';
+  });
+}
+
+async function toggleCategory(checkbox) {
+  const catName = checkbox.dataset.cat;
+  const enabled = checkbox.checked ? 1 : 0;
+  checkbox.disabled = true;
+  try {
+    const r = await POST('/api/webfilter/category', { name: catName, enabled });
+    const label = checkbox.closest('label').querySelector('.text-muted');
+    if (label) label.textContent = enabled ? 'Enabled' : 'Disabled';
+    if (r.status === 'ok') toast(`"${catName}" ${enabled ? 'enabled' : 'disabled'} — filter applied`, enabled ? 'success' : 'info');
+    else toast('Apply error: ' + (r.message || 'unknown'), 'error');
+  } catch (e) { toast('Error toggling category', 'error'); checkbox.checked = !checkbox.checked; }
+  checkbox.disabled = false;
+}
+
+document.getElementById('add-filter-modal').addEventListener('click', e => {
+  if (e.target === document.getElementById('add-filter-modal')) closeModal('add-filter-modal');
+});
+</script>
+{% endblock %}
