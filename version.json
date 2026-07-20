@@ -1,9 +1,5 @@
 {
-  "version": "1.0.1",
+  "version": "1.0.2",
   "date": "2026-07-20",
-  "changelog": [
-    "Fix: SSL VPN clients lose internet when redirect-gateway is active (new servers)",
-    "Fix: DHCP pool Edit button was broken (JSON in onclick attribute)",
-    "Fix: Firewall Policies Edit button was broken on servers installed from ISO"
-  ]
+  "product": "FGUARD UTC"
 }

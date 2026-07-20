@@ -89,7 +89,7 @@ def write_server_config():
     _routes = database.get_ssl_vpn_routes()
     _push_routes = "".join(
         f'push "route {r["network"]} {r["netmask"]}"\n'
-        for r in _routes if r.get("enabled")
+        for r in _routes if r.get("enabled", 1)
     )
     _dns_domain = cfg.get("dns_domain", "").strip()
     _push_domain = f'push "dhcp-option DOMAIN {_dns_domain}"\n' if _dns_domain else ""
