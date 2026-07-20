@@ -723,19 +723,23 @@ async function refreshSSLClients() {
 }
 
 async function loadSSLRoutes() {
-  const routes = await GET('/api/vpn/ssl/routes');
-  const tbody = document.getElementById('ssl-routes-body');
-  if (!routes || !routes.length) {
-    tbody.innerHTML = '<tr><td colspan="4" class="text-muted" style="text-align:center;padding:16px">No routes configured</td></tr>';
-    return;
+  try {
+    const routes = await GET('/api/vpn/ssl/routes');
+    const tbody = document.getElementById('ssl-routes-body');
+    if (!routes || !routes.length) {
+      tbody.innerHTML = '<tr><td colspan="4" class="text-muted" style="text-align:center;padding:16px">No routes configured</td></tr>';
+      return;
+    }
+    tbody.innerHTML = routes.map(r => `
+      <tr id="ssl-route-${r.id}">
+        <td class="font-mono">${r.network}</td>
+        <td class="font-mono">${r.netmask}</td>
+        <td>${r.description || ''}</td>
+        <td><button class="btn btn-danger btn-sm" onclick="delSSLRoute(${r.id})">Delete</button></td>
+      </tr>`).join('');
+  } catch(e) {
+    console.error('loadSSLRoutes:', e);
   }
-  tbody.innerHTML = routes.map(r => `
-    <tr id="ssl-route-${r.id}">
-      <td class="font-mono">${r.network}</td>
-      <td class="font-mono">${r.netmask}</td>
-      <td>${r.description || ''}</td>
-      <td><button class="btn btn-danger btn-sm" onclick="delSSLRoute(${r.id})">Delete</button></td>
-    </tr>`).join('');
 }
 
 async function addSSLRoute() {
@@ -743,21 +747,29 @@ async function addSSLRoute() {
   const netmask = document.getElementById('route-netmask').value.trim();
   const description = document.getElementById('route-desc').value.trim();
   if (!network || !netmask) { toast('Network and netmask are required', 'error'); return; }
-  const r = await POST('/api/vpn/ssl/routes', { network, netmask, description });
-  if (r.status === 'ok') {
-    document.getElementById('route-network').value = '';
-    document.getElementById('route-netmask').value = '';
-    document.getElementById('route-desc').value = '';
-    toast('Route added. Reconnect VPN to receive the new route.', 'success');
-    loadSSLRoutes();
+  try {
+    const r = await POST('/api/vpn/ssl/routes', { network, netmask, description });
+    if (r.status === 'ok') {
+      document.getElementById('route-network').value = '';
+      document.getElementById('route-netmask').value = '';
+      document.getElementById('route-desc').value = '';
+      toast('Route saved. Restart OpenVPN server to push to clients.', 'success');
+      loadSSLRoutes();
+    }
+  } catch(e) {
+    toast('Error: ' + e.message, 'error');
   }
 }
 
 async function delSSLRoute(id) {
   if (!confirm2('Delete this route?')) return;
-  await DELETE(`/api/vpn/ssl/routes/${id}`);
-  document.getElementById(`ssl-route-${id}`)?.remove();
-  toast('Route deleted. Reconnect VPN to apply.', 'success');
+  try {
+    await DELETE(`/api/vpn/ssl/routes/${id}`);
+    document.getElementById(`ssl-route-${id}`)?.remove();
+    toast('Route deleted. Restart OpenVPN server to apply.', 'success');
+  } catch(e) {
+    toast('Error: ' + e.message, 'error');
+  }
 }
 
 async function genPSK() { const r = await POST('/api/vpn/ipsec/psk'); document.getElementById('bov-psk').value = r.psk; }
