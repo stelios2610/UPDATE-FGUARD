@@ -192,6 +192,15 @@ def apply_update():
             _status["available"] = False
             _status["downloaded"] = False
 
+        # Run post-update migrations if script exists
+        post_update = os.path.join(BASE_DIR, "build", "post-update.sh")
+        if os.path.isfile(post_update):
+            try:
+                os.chmod(post_update, 0o755)
+                subprocess.run(["bash", post_update], timeout=30, check=False)
+            except Exception:
+                pass
+
         # Restart service in background
         threading.Thread(target=_restart_service, daemon=True).start()
 
