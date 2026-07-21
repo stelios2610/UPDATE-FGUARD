@@ -1,0 +1,11 @@
+[Unit]
+Description=WireGuard DDNS watchdog — runs every 2 minutes
+After=network-online.target
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
