@@ -480,20 +480,130 @@ def get_connection_tracking():
 
 # ─── DHCP Relay ───────────────────────────────────────────────────────────────
 
+_RELAY_SCRIPT = "/usr/local/bin/fguard-dhcp-relay.py"
+_RELAY_SERVICE = "fguard-dhcp-relay"
+_RELAY_CONF = "/etc/default/fguard-dhcp-relay"
+
+_RELAY_SCRIPT_CONTENT = r"""#!/usr/bin/env python3
+# FGUARD DHCP Relay — uses SO_BINDTODEVICE so broadcasts reach the correct LAN interface.
+# Config: /etc/default/fguard-dhcp-relay  (RELAY_IF, DHCP_SRV)
+import os, socket, struct, select, fcntl, sys, logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s',
+                    stream=sys.stdout)
+log = logging.getLogger('fguard-dhcp-relay')
+
+RELAY_IF  = os.environ.get('RELAY_IF', 'eth1')
+DHCP_SRV  = os.environ.get('DHCP_SRV', '192.168.0.26')
+SO_BINDTODEVICE = 25
+
+def _iface_ip(ifname):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        return socket.inet_ntoa(fcntl.ioctl(
+            s.fileno(), 0x8915,
+            struct.pack('256s', ifname[:15].encode())
+        )[20:24])
+    finally:
+        s.close()
+
+RELAY_IP = _iface_ip(RELAY_IF)
+
+def giaddr(pkt):     return socket.inet_ntoa(pkt[24:28])
+def set_giaddr(pkt): return pkt[:24] + socket.inet_aton(RELAY_IP) + pkt[28:]
+def inc_hops(pkt):   return pkt[:3] + bytes([pkt[3] + 1]) + pkt[4:]
+def get_mac(pkt):    return ':'.join(f'{b:02x}' for b in pkt[28:34])
+def get_xid(pkt):    return struct.unpack('!I', pkt[4:8])[0]
+
+# client_sock: bound to eth1 via SO_BINDTODEVICE — receives LAN broadcasts and
+# sends the OFFER broadcast back on the same interface.
+client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+client_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+client_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+client_sock.setsockopt(socket.SOL_SOCKET, SO_BINDTODEVICE, RELAY_IF.encode())
+client_sock.bind(('', 67))
+
+# server_sock: bound to RELAY_IP:67 — unicasts requests to the DHCP server and
+# receives the unicast reply (wg0/tun path).
+server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server_sock.bind((RELAY_IP, 67))
+
+log.info(f"DHCP relay: {RELAY_IF}/{RELAY_IP} -> {DHCP_SRV}")
+
+while True:
+    readable, _, _ = select.select([client_sock, server_sock], [], [], 60)
+    for sock in readable:
+        data, _ = sock.recvfrom(4096)
+        if not data or len(data) < 240:
+            continue
+        op  = data[0]
+        mac = get_mac(data)
+        xid = get_xid(data)
+        if sock is client_sock and op == 1:
+            pkt = inc_hops(data)
+            if giaddr(pkt) == '0.0.0.0':
+                pkt = set_giaddr(pkt)
+            server_sock.sendto(pkt, (DHCP_SRV, 67))
+            log.info(f"DISCOVER {mac} xid={xid:08x} -> {DHCP_SRV}")
+        elif sock is server_sock and op == 2:
+            if giaddr(data) == RELAY_IP:
+                client_sock.sendto(data, ('255.255.255.255', 68))
+                log.info(f"OFFER for {mac} xid={xid:08x} -> {RELAY_IF} broadcast")
+"""
+
+_RELAY_UNIT_CONTENT = """\
+[Unit]
+Description=FGUARD DHCP Relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/default/fguard-dhcp-relay
+ExecStart=/usr/bin/python3 /usr/local/bin/fguard-dhcp-relay.py
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def _install_relay_service():
+    """Write the relay script and systemd unit if they don't exist yet."""
+    import subprocess as _sp
+    script_path = _RELAY_SCRIPT
+    unit_path = f"/etc/systemd/system/{_RELAY_SERVICE}.service"
+    try:
+        with open(script_path, "w") as f:
+            f.write(_RELAY_SCRIPT_CONTENT)
+        os.chmod(script_path, 0o755)
+        with open(unit_path, "w") as f:
+            f.write(_RELAY_UNIT_CONTENT)
+        _sp.run(["systemctl", "daemon-reload"], capture_output=True)
+    except Exception as e:
+        return False, str(e)
+    return True, ""
+
+
 def apply_dhcp_relay():
-    """Enable or disable DHCP relay using isc-dhcp-relay (dhcrelay)."""
+    """Enable or disable DHCP relay using the fguard-dhcp-relay Python service."""
     if not IS_LINUX:
         return False, "DHCP Relay is Linux only"
 
     cfg = database.get_dhcp_relay()
-    enabled = cfg.get("enabled", 0)
-    server_ip = cfg.get("server_ip", "").strip()
+    enabled    = cfg.get("enabled", 0)
+    server_ip  = cfg.get("server_ip", "").strip()
     interfaces = cfg.get("interfaces", "").strip()
 
-    # Stop any running dhcrelay
+    run(["systemctl", "stop", _RELAY_SERVICE])
+    # Also stop legacy isc-dhcp-relay if still present
+    run(["systemctl", "stop", "isc-dhcp-relay"])
     run(["pkill", "-f", "dhcrelay"])
 
     if not enabled:
+        run(["systemctl", "disable", _RELAY_SERVICE])
         return True, "DHCP Relay stopped"
 
     if not server_ip:
@@ -501,30 +611,37 @@ def apply_dhcp_relay():
     if not interfaces:
         return False, "DHCP Relay: no interfaces configured"
 
-    # Ensure isc-dhcp-relay is installed
-    ok, _, _ = run(["which", "dhcrelay"])
+    # Use the first configured interface as the relay interface
+    relay_if = interfaces.split(",")[0].strip()
+
+    # Ensure relay script and unit are installed
+    ok, err = _install_relay_service()
     if not ok:
-        run(["apt-get", "install", "-y", "-qq", "isc-dhcp-relay"])
+        return False, f"Cannot install relay service: {err}"
 
-    # Build dhcrelay command
-    iface_args = []
-    for iface in interfaces.split(","):
-        iface = iface.strip()
-        if iface:
-            iface_args += ["-i", iface]
+    # Write config consumed by the systemd EnvironmentFile
+    relay_conf = f'RELAY_IF="{relay_if}"\nDHCP_SRV="{server_ip}"\n'
+    try:
+        with open(_RELAY_CONF, "w") as f:
+            f.write(relay_conf)
+    except Exception as e:
+        return False, f"Cannot write relay config: {e}"
 
-    cmd = ["dhcrelay", "-4"] + iface_args + [server_ip]
-    ok, out, err = run(cmd)
+    run(["systemctl", "enable", _RELAY_SERVICE])
+    ok, _, err = run(["systemctl", "restart", _RELAY_SERVICE])
     if not ok:
-        return False, f"dhcrelay failed: {err}"
+        _, status, _ = run(["systemctl", "status", _RELAY_SERVICE, "--no-pager", "-l"])
+        return False, f"fguard-dhcp-relay failed: {err or status[:300]}"
 
-    database.add_log("INFO", details=f"DHCP Relay started → {server_ip} on {interfaces}")
-    return True, f"DHCP Relay active → {server_ip} on {interfaces}"
+    database.add_log("INFO", details=f"DHCP Relay started → {server_ip} on {relay_if}")
+    return True, f"DHCP Relay active → {server_ip} on {relay_if}"
 
 
 def get_dhcp_relay_status():
-    """Check if dhcrelay is running."""
-    ok, out, _ = run(["pgrep", "-a", "dhcrelay"])
+    """Check if fguard-dhcp-relay is running."""
+    ok, out, _ = run(["systemctl", "is-active", _RELAY_SERVICE])
+    if not ok:
+        ok, out, _ = run(["pgrep", "-fa", "fguard-dhcp-relay"])
     return {"running": ok, "process": out.strip() if ok else ""}
 
 
