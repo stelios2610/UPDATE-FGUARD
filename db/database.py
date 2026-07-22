@@ -1097,9 +1097,6 @@ def save_dhcp_relay(enabled, server_ip, interfaces):
         )
     conn.commit()
     conn.close()
-    conn.execute("DELETE FROM dhcp_leases WHERE id = ?", (lease_id,))
-    conn.commit()
-    conn.close()
 
 
 # ─── DNS ──────────────────────────────────────────────────────────────────────
