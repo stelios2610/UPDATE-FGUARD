@@ -233,10 +233,16 @@ except Exception:
 
 # ── Server Control ────────────────────────────────────────────────────────────
 
+def _kill_orphan_openvpn():
+    """Kill any direct-launched openvpn process (not managed by systemd)."""
+    try:
+        subprocess.run(["pkill", "-f", "ssl-vpn-server.conf"], capture_output=True)
+    except Exception:
+        pass
+
+
 def start_server():
     global _server_process, _server_status
-    if _server_process and _server_process.poll() is None:
-        return False, "Already running"
 
     ok, msg = write_server_config()
     if not ok:
@@ -245,7 +251,23 @@ def start_server():
     if IS_LINUX:
         write_auth_script()
         apply_vpn_internet_nat()
+        _kill_orphan_openvpn()
+        try:
+            subprocess.run(
+                ["systemctl", "enable", "--now", "openvpn-server@server"],
+                timeout=15, check=True, capture_output=True
+            )
+            _server_status = "Running"
+            database.save_ssl_vpn_config(status="Running")
+            database.add_log("INFO", details="SSL VPN server started")
+            return True, "SSL VPN started (systemd)"
+        except Exception as e:
+            _server_status = "Error"
+            return False, str(e)
 
+    # Non-Linux (dev/Windows)
+    if _server_process and _server_process.poll() is None:
+        return False, "Already running"
     exe_path = database.get_setting("vpn_openvpn_path", "openvpn")
     try:
         _server_process = subprocess.Popen(
@@ -264,13 +286,25 @@ def start_server():
 
 def stop_server():
     global _server_process, _server_status
-    if _server_process and _server_process.poll() is None:
-        _server_process.terminate()
+
+    if IS_LINUX:
         try:
-            _server_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            _server_process.kill()
+            subprocess.run(
+                ["systemctl", "stop", "openvpn-server@server"],
+                timeout=15, capture_output=True
+            )
+        except Exception:
+            pass
+        _kill_orphan_openvpn()
+    else:
+        if _server_process and _server_process.poll() is None:
+            _server_process.terminate()
+            try:
+                _server_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _server_process.kill()
         _server_process = None
+
     _server_status = "Stopped"
     database.save_ssl_vpn_config(status="Stopped")
     database.add_log("INFO", details="SSL VPN server stopped")
@@ -289,10 +323,20 @@ def _monitor_server():
 
 def get_server_status():
     global _server_status
-    if _server_process and _server_process.poll() is None:
-        _server_status = "Running"
-    elif _server_process and _server_process.poll() is not None:
-        _server_status = "Stopped"
+    if IS_LINUX:
+        try:
+            result = subprocess.run(
+                ["systemctl", "is-active", "openvpn-server@server"],
+                capture_output=True, text=True, timeout=3
+            )
+            _server_status = "Running" if result.stdout.strip() == "active" else "Stopped"
+        except Exception:
+            pass
+    else:
+        if _server_process and _server_process.poll() is None:
+            _server_status = "Running"
+        elif _server_process and _server_process.poll() is not None:
+            _server_status = "Stopped"
     return _server_status
 
 
