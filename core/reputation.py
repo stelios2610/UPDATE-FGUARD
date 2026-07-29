@@ -251,6 +251,11 @@ def _unblock_ddos(ip):
         run(["iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"])
 
 
+def clear_ddos_stats():
+    _ddos_blocked.clear()
+    _rate_tracker.clear()
+
+
 def get_ddos_stats():
     return {
         "blocked_count": len(_ddos_blocked),

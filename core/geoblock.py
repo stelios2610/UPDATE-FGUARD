@@ -3,8 +3,9 @@
 Reads blocked_countries from DB, builds a whitelist ipset of allowed
 country CIDRs, and installs a DROP rule in AEGISGUARD_INPUT so all
 WAN traffic from blocked countries is silently dropped before reaching
-any service.  VPN ports (1194, 51820, 500, 4500) are always allowed
-regardless of country so the admin can connect from anywhere.
+any service.  VPN ports (1194, 51820) are always allowed regardless of country so
+the admin can connect from anywhere.  IPSec (500/4500) is excluded —
+it runs over WireGuard, not the internet.
 """
 import os
 import json
@@ -21,12 +22,12 @@ WAN_IFACE    = None          # auto-detected from DB
 COMMENT_TAG  = "aegis_geoblock"
 
 # Ports that must stay open regardless of country (VPN access from abroad)
+# NOTE: IPSec (500/4500) intentionally excluded — IPSec runs over WireGuard,
+# not directly over the internet. Exposing 500/4500 attracts IKE scanners.
 _VPN_PORTS = [
     ("udp", "1194"),   # OpenVPN
     ("tcp", "1194"),   # OpenVPN TCP
     ("udp", "51820"),  # WireGuard
-    ("udp", "500"),    # IPSec IKE
-    ("udp", "4500"),   # IPSec NAT-T
 ]
 
 # Country CIDR source: ipdeny.com (free, no key needed)
@@ -236,11 +237,13 @@ def get_status():
 
 
 def _install_persistence():
-    """Create a systemd service that restores ipset on boot."""
-    service = """\
+    """Create systemd services that restore ipset and rebuild iptables chain on boot."""
+    # 1. ipset restore service — runs BEFORE netfilter-persistent and chain rebuild
+    ipset_svc = """\
 [Unit]
 Description=FGUARD UTC GeoBlock ipset restore
-Before=iptables.service netfilter-persistent.service
+Before=netfilter-persistent.service fguard-geoblock-rules.service
+After=network.target
 DefaultDependencies=no
 
 [Service]
@@ -252,5 +255,58 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 """
     with open("/etc/systemd/system/aegisguard-geoblock.service", "w") as f:
-        f.write(service)
-    subprocess.run("systemctl daemon-reload && systemctl enable aegisguard-geoblock", shell=True)
+        f.write(ipset_svc)
+
+    # 2. iptables chain rebuild script — writes AEGISGUARD_INPUT rules after ipset is ready
+    wan = _get_wan_iface()
+    rules_script = """\
+#!/bin/bash
+# FGUARD UTC — Rebuild AEGISGUARD_INPUT geoblock rules on boot
+WAN={wan}
+CHAIN=AEGISGUARD_INPUT
+IPSET=geo_allowed
+
+if ! ipset list $IPSET -name &>/dev/null; then
+    echo "fguard-geoblock-rules: ipset $IPSET not found, skipping" | systemd-cat -t fguard
+    exit 1
+fi
+
+iptables -F $CHAIN 2>/dev/null
+iptables -A $CHAIN -m state --state RELATED,ESTABLISHED -j ACCEPT
+iptables -A $CHAIN ! -i $WAN -j RETURN
+iptables -A $CHAIN -i $WAN -p udp --dport 1194 -j ACCEPT
+iptables -A $CHAIN -i $WAN -p tcp --dport 1194 -j ACCEPT
+iptables -A $CHAIN -i $WAN -p udp --dport 51820 -j ACCEPT
+iptables -A $CHAIN -i $WAN -m set --match-set $IPSET src -j ACCEPT
+iptables -A $CHAIN -i $WAN -j DROP
+echo "fguard-geoblock-rules: AEGISGUARD_INPUT rebuilt (wan=$WAN, ipset=$IPSET)" | systemd-cat -t fguard
+""".format(wan=wan)
+
+    with open("/usr/local/bin/fguard-geoblock-rules.sh", "w") as f:
+        f.write(rules_script)
+    subprocess.run("chmod +x /usr/local/bin/fguard-geoblock-rules.sh", shell=True)
+
+    # 3. chain rebuild service — runs AFTER ipset restore and netfilter-persistent
+    chain_svc = """\
+[Unit]
+Description=FGUARD UTC GeoBlock iptables chain rebuild
+After=aegisguard-geoblock.service netfilter-persistent.service network.target
+Requires=aegisguard-geoblock.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/fguard-geoblock-rules.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+"""
+    with open("/etc/systemd/system/fguard-geoblock-rules.service", "w") as f:
+        f.write(chain_svc)
+
+    subprocess.run(
+        "systemctl daemon-reload && "
+        "systemctl enable aegisguard-geoblock && "
+        "systemctl enable fguard-geoblock-rules",
+        shell=True
+    )

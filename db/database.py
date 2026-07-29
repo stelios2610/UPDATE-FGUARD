@@ -1,6 +1,6 @@
 import sqlite3
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "firewall.db")
 
@@ -941,6 +941,33 @@ def get_log_stats():
     ).fetchone()["c"]
     conn.close()
     return {"total": total, "blocked": blocked, "allowed": allowed, "today": today_count}
+
+
+# ─── 72-hour stats reset ──────────────────────────────────────────────────────
+
+def delete_logs_older_than(hours=72):
+    cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+    conn = get_connection()
+    conn.execute("DELETE FROM logs WHERE timestamp < ?", (cutoff,))
+    conn.commit()
+    conn.execute("VACUUM")
+    conn.close()
+
+def get_traffic_baseline():
+    sent = get_setting("traffic_baseline_sent", "0")
+    recv  = get_setting("traffic_baseline_recv",  "0")
+    try:
+        return int(sent), int(recv)
+    except (TypeError, ValueError):
+        return 0, 0
+
+def set_traffic_baseline(sent: int, recv: int):
+    set_setting("traffic_baseline_sent", str(sent))
+    set_setting("traffic_baseline_recv",  str(recv))
+    set_setting("stats_last_reset", datetime.now().isoformat())
+
+def get_stats_last_reset():
+    return get_setting("stats_last_reset", "")
 
 
 # ─── Network Interfaces ───────────────────────────────────────────────────────

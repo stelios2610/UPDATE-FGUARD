@@ -89,6 +89,39 @@ def _log_pruner():
 
 _threading.Thread(target=_log_pruner, daemon=True).start()
 
+# ── 72-hour stats reset ───────────────────────────────────────────────────────
+_RESET_HOURS = 72
+
+def _stats_resetter():
+    import time
+    # On startup: if never reset before, establish baseline (no deletion first run)
+    if not database.get_stats_last_reset():
+        try:
+            net = psutil.net_io_counters()
+            database.set_traffic_baseline(net.bytes_sent, net.bytes_recv)
+        except Exception:
+            pass
+
+    while True:
+        time.sleep(3600)  # check every hour
+        try:
+            last = database.get_stats_last_reset()
+            if last:
+                from datetime import datetime as _dt
+                elapsed = (_dt.now() - _dt.fromisoformat(last)).total_seconds()
+                if elapsed < _RESET_HOURS * 3600:
+                    continue
+            # 72h passed — reset everything
+            database.delete_logs_older_than(_RESET_HOURS)
+            net = psutil.net_io_counters()
+            database.set_traffic_baseline(net.bytes_sent, net.bytes_recv)
+            ips.clear_alerts()
+            reputation.clear_ddos_stats()
+        except Exception:
+            pass
+
+_threading.Thread(target=_stats_resetter, daemon=True).start()
+
 # ── Daily update checker ──────────────────────────────────────────────────────
 updater.start_daily_check()
 

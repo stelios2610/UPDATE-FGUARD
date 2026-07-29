@@ -48,12 +48,14 @@ def get_connections():
 
 
 def get_network_stats():
+    from db import database
     stats = psutil.net_io_counters()
+    b_sent, b_recv = database.get_traffic_baseline()
     return {
-        "bytes_sent": stats.bytes_sent,
-        "bytes_recv": stats.bytes_recv,
-        "packets_sent": stats.packets_sent,
-        "packets_recv": stats.packets_recv,
+        "bytes_sent":    max(0, stats.bytes_sent    - b_sent),
+        "bytes_recv":    max(0, stats.bytes_recv    - b_recv),
+        "packets_sent":  stats.packets_sent,
+        "packets_recv":  stats.packets_recv,
     }
 
 
