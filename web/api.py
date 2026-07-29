@@ -104,13 +104,14 @@ _RESET_HOURS = 72
 
 def _stats_resetter():
     import time
-    # On startup: if never reset before, establish baseline (no deletion first run)
-    if not database.get_stats_last_reset():
-        try:
-            net = psutil.net_io_counters()
+    # On startup: set baseline if first run OR if psutil < baseline (reboot detected)
+    try:
+        net = psutil.net_io_counters()
+        b_sent, b_recv = database.get_traffic_baseline()
+        if not database.get_stats_last_reset() or net.bytes_sent < b_sent or net.bytes_recv < b_recv:
             database.set_traffic_baseline(net.bytes_sent, net.bytes_recv)
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     while True:
         time.sleep(3600)  # check every hour
