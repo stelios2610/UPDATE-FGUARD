@@ -217,7 +217,7 @@
     {% if not is_root %}
     <div style="color:var(--warning);margin-top:3px;font-size:10px">⚠ Not Administrator</div>
     {% endif %}
-    <div style="color:#444;margin-top:5px;font-size:10px">FGUARD UTC v1.0.0</div>
+    <div style="color:#444;margin-top:5px;font-size:10px">FGUARD UTC v{{ app_version }}</div>
     <form method="POST" action="/logout" style="margin-top:8px">
       <button type="submit" style="display:block;width:100%;background:none;border:1px solid #30363d;border-radius:4px;color:#8b949e;font-size:11px;padding:4px 8px;text-align:center;cursor:pointer;transition:all 0.15s"
               onmouseover="this.style.color='#e74c3c';this.style.borderColor='#e74c3c'"

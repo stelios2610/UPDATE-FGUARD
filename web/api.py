@@ -1,6 +1,16 @@
 """FGUARD UTC Web API - Complete FastAPI backend."""
-import sys, os
+import sys, os, json as _json
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+def _load_version():
+    try:
+        _vp = os.path.join(os.path.dirname(os.path.dirname(__file__)), "version.json")
+        with open(_vp) as _f:
+            return _json.load(_f).get("version", "1.0.0")
+    except Exception:
+        return "1.0.0"
+
+APP_VERSION = _load_version()
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, RedirectResponse
@@ -254,6 +264,7 @@ def _ctx(request, **kw):
         "lic_customer": lic_info.get("customer", ""),
         "lic_expires": lic_info.get("expires", ""),
         "update_available": updater.get_status().get("available", False),
+        "app_version": APP_VERSION,
         **kw
     })
 
@@ -266,7 +277,7 @@ def _ctx(request, **kw):
 async def login_page(request: Request, error: str = "", next: str = "/"):
     if get_session_user(request):
         return RedirectResponse(url="/", status_code=302)
-    return templates.TemplateResponse(request, "login.html", {"error": error})
+    return templates.TemplateResponse(request, "login.html", {"error": error, "app_version": APP_VERSION})
 
 @app.post("/login")
 async def login_submit(request: Request,
@@ -276,7 +287,7 @@ async def login_submit(request: Request,
     client_ip = request.client.host if request.client else "unknown"
     if is_rate_limited(client_ip):
         return templates.TemplateResponse(request, "login.html",
-                                          {"error": "Too many login attempts. Try again later."},
+                                          {"error": "Too many login attempts. Try again later.", "app_version": APP_VERSION},
                                           status_code=429)
     if attempt_login(username, password):
         token = create_session(username)
@@ -290,7 +301,7 @@ async def login_submit(request: Request,
         )
         return response
     return templates.TemplateResponse(request, "login.html",
-                                      {"error": "Invalid username or password"},
+                                      {"error": "Invalid username or password", "app_version": APP_VERSION},
                                       status_code=401)
 
 @app.post("/logout")
