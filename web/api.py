@@ -635,6 +635,7 @@ class VlanCreate(BaseModel):
     vlan_id: int; name: str; parent_interface: str
     ip_address: str = ""; netmask: str = "255.255.255.0"; gateway: str = ""
     zone: str = "OPTIONAL"; dhcp_enabled: int = 0; dhcp_start: str = ""; dhcp_end: str = ""
+    dhcp_gateway: str = ""; dhcp_dns1: str = ""; dhcp_dns2: str = ""
     mtu: int = 1500; enabled: int = 1; description: str = ""
 
 @app.get("/api/network/vlans")

@@ -206,9 +206,13 @@ def write_dhcp_config():
         nm = v.get("netmask", "255.255.255.0")
         if not (start and end and gw):
             continue
+        router = v.get("dhcp_gateway", "").strip() or gw
+        dns1 = v.get("dhcp_dns1", "").strip() or gw
+        dns2 = v.get("dhcp_dns2", "").strip()
+        dns_opt = f"{dns1},{dns2}" if dns2 else dns1
         lines.append(f"dhcp-range={viface},{start},{end},{nm},86400s")
-        lines.append(f"dhcp-option={viface},3,{gw}")
-        lines.append(f"dhcp-option={viface},6,{gw}")
+        lines.append(f"dhcp-option={viface},3,{router}")
+        lines.append(f"dhcp-option={viface},6,{dns_opt}")
 
     for lease in leases:
         lines.append(f"dhcp-host={lease['mac']},{lease['ip']}" + (f",{lease['hostname']}" if lease.get("hostname") else ""))
@@ -819,10 +823,14 @@ def _write_vlan_dnsmasq(vlans):
         gw = v.get("ip_address", "").strip()
         nm = v.get("netmask", "255.255.255.0")
         if start and end and gw:
+            router = v.get("dhcp_gateway", "").strip() or gw
+            dns1 = v.get("dhcp_dns1", "").strip() or gw
+            dns2 = v.get("dhcp_dns2", "").strip()
+            dns_opt = f"{dns1},{dns2}" if dns2 else dns1
             lines += ["", f"interface={iface}",
                       f"dhcp-range={iface},{start},{end},{nm},86400s",
-                      f"dhcp-option={iface},3,{gw}",
-                      f"dhcp-option={iface},6,{gw}"]
+                      f"dhcp-option={iface},3,{router}",
+                      f"dhcp-option={iface},6,{dns_opt}"]
 
     with open("/etc/dnsmasq.d/aegisguard.conf", "w") as f:
         f.write("\n".join(lines) + "\n")

@@ -735,6 +735,22 @@
             <input class="form-control font-mono" id="vlan-dhcp-end" placeholder="e.g. 192.168.10.200">
           </div>
         </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">DHCP Gateway <span class="text-muted" style="font-weight:normal">(default: VLAN IP)</span></label>
+            <input class="form-control font-mono" id="vlan-dhcp-gateway" placeholder="e.g. 192.168.10.1">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">DNS Server 1 <span class="text-muted" style="font-weight:normal">(default: VLAN IP)</span></label>
+            <input class="form-control font-mono" id="vlan-dhcp-dns1" placeholder="e.g. 192.168.10.1">
+          </div>
+          <div class="form-group">
+            <label class="form-label">DNS Server 2 <span class="text-muted" style="font-weight:normal">(optional)</span></label>
+            <input class="form-control font-mono" id="vlan-dhcp-dns2" placeholder="e.g. 8.8.8.8">
+          </div>
+        </div>
       </div>
       <div class="form-group" style="margin-top:8px">
         <label class="form-label">Description</label>
@@ -1367,6 +1383,9 @@ function editVlan(v) {
   document.getElementById('vlan-dhcp-fields').style.display = v.dhcp_enabled ? '' : 'none';
   document.getElementById('vlan-dhcp-start').value = v.dhcp_start || '';
   document.getElementById('vlan-dhcp-end').value = v.dhcp_end || '';
+  document.getElementById('vlan-dhcp-gateway').value = v.dhcp_gateway || '';
+  document.getElementById('vlan-dhcp-dns1').value = v.dhcp_dns1 || '';
+  document.getElementById('vlan-dhcp-dns2').value = v.dhcp_dns2 || '';
   document.getElementById('vlan-enabled').checked = !!v.enabled;
   document.getElementById('vlan-desc').value = v.description || '';
   document.getElementById('vlan-modal-title').textContent = 'Edit VLAN';
@@ -1389,6 +1408,9 @@ async function saveVlan() {
     dhcp_enabled: document.getElementById('vlan-dhcp-enabled').checked ? 1 : 0,
     dhcp_start: document.getElementById('vlan-dhcp-start').value.trim(),
     dhcp_end: document.getElementById('vlan-dhcp-end').value.trim(),
+    dhcp_gateway: document.getElementById('vlan-dhcp-gateway').value.trim(),
+    dhcp_dns1: document.getElementById('vlan-dhcp-dns1').value.trim(),
+    dhcp_dns2: document.getElementById('vlan-dhcp-dns2').value.trim(),
     enabled: document.getElementById('vlan-enabled').checked ? 1 : 0,
     description: document.getElementById('vlan-desc').value.trim(),
   };

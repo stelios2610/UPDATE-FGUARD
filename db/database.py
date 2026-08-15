@@ -106,6 +106,9 @@ def initialize():
             dhcp_enabled INTEGER DEFAULT 0,
             dhcp_start TEXT DEFAULT '',
             dhcp_end TEXT DEFAULT '',
+            dhcp_gateway TEXT DEFAULT '',
+            dhcp_dns1 TEXT DEFAULT '',
+            dhcp_dns2 TEXT DEFAULT '',
             mtu INTEGER DEFAULT 1500,
             enabled INTEGER DEFAULT 1,
             description TEXT DEFAULT '',
@@ -578,6 +581,13 @@ def initialize():
             created_at TEXT NOT NULL
         )
     """)
+
+    # ── VLAN schema migrations ────────────────────────────────────────────────
+    for _col, _default in [("dhcp_gateway", "''"), ("dhcp_dns1", "''"), ("dhcp_dns2", "''")]:
+        try:
+            c.execute(f"ALTER TABLE vlans ADD COLUMN {_col} TEXT DEFAULT {_default}")
+        except Exception:
+            pass
 
     # ── SSL VPN schema migrations ─────────────────────────────────────────────
     try:
@@ -1565,22 +1575,26 @@ def get_vlans():
 
 def add_vlan(vlan_id, name, parent_interface, ip_address="", netmask="255.255.255.0",
              gateway="", zone="OPTIONAL", dhcp_enabled=0, dhcp_start="", dhcp_end="",
+             dhcp_gateway="", dhcp_dns1="", dhcp_dns2="",
              mtu=1500, enabled=1, description=""):
     conn = get_connection()
     conn.execute("""
         INSERT INTO vlans (vlan_id, name, parent_interface, ip_address, netmask, gateway,
-            zone, dhcp_enabled, dhcp_start, dhcp_end, mtu, enabled, description, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            zone, dhcp_enabled, dhcp_start, dhcp_end, dhcp_gateway, dhcp_dns1, dhcp_dns2,
+            mtu, enabled, description, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (vlan_id, name, parent_interface, ip_address, netmask, gateway, zone,
-          dhcp_enabled, dhcp_start, dhcp_end, mtu, enabled, description,
-          datetime.now().isoformat()))
+          dhcp_enabled, dhcp_start, dhcp_end, dhcp_gateway, dhcp_dns1, dhcp_dns2,
+          mtu, enabled, description, datetime.now().isoformat()))
     conn.commit()
     conn.close()
 
 
 def update_vlan(vlan_db_id, **kwargs):
     allowed = {"vlan_id", "name", "parent_interface", "ip_address", "netmask", "gateway",
-               "zone", "dhcp_enabled", "dhcp_start", "dhcp_end", "mtu", "enabled", "description"}
+               "zone", "dhcp_enabled", "dhcp_start", "dhcp_end",
+               "dhcp_gateway", "dhcp_dns1", "dhcp_dns2",
+               "mtu", "enabled", "description"}
     fields = {k: v for k, v in kwargs.items() if k in allowed}
     if not fields:
         return
