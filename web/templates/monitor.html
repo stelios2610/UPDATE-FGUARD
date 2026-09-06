@@ -6,10 +6,14 @@
 {% block content %}
 
 <!-- Stats Row -->
-<div class="grid grid-4" style="margin-bottom:16px">
+<div class="grid grid-5" style="margin-bottom:16px">
   <div class="stat-card blue">
     <div class="value" id="conn-count">{{ connections|length }}</div>
     <div class="label">Active Connections</div>
+  </div>
+  <div class="stat-card red">
+    <div class="value" id="blocked-ip-count">{{ blocked_count|default(0) }}</div>
+    <div class="label">Blocked IPs</div>
   </div>
   <div class="stat-card green">
     <div class="value" id="bytes-sent">—</div>
@@ -22,6 +26,56 @@
   <div class="stat-card">
     <div class="value">{{ ifaces|length }}</div>
     <div class="label">Interfaces</div>
+  </div>
+</div>
+
+<!-- Blocked IPs -->
+<div class="card" style="border-left:3px solid var(--danger)">
+  <div class="card-header">
+    <div>
+      <div class="card-title" style="color:var(--danger)">Blocked IPs</div>
+      <div class="card-sub">Active IPS / DDoS / manual blocks and recent BLOCK · DROP · THREAT events</div>
+    </div>
+    <a href="/logs?action=BLOCK&limit=250" class="btn btn-secondary btn-sm">View Logs</a>
+  </div>
+  <div class="toolbar">
+    <input id="blocked-search" class="form-control" style="max-width:260px" placeholder="Search blocked IPs...">
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>IP Address</th>
+          <th>Source</th>
+          <th>Reason</th>
+          <th>Hits</th>
+          <th>Last Seen</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="blocked-tbody">
+        {% for b in blocked_ips|default([]) %}
+        <tr>
+          <td class="font-mono"><a href="/logs?search={{ b.ip }}" style="color:inherit">{{ b.ip }}</a></td>
+          <td><span class="badge badge-{{ 'critical' if b.source == 'IPS' else 'block' if b.source == 'DDoS' else 'warn' if b.source == 'Manual' else 'disabled' }}">{{ b.source }}</span></td>
+          <td class="text-muted">{{ b.reason or '—' }}</td>
+          <td class="font-mono">{{ b.hits }}</td>
+          <td class="font-mono text-muted">{{ b.last_seen[:19]|replace('T',' ') if b.last_seen else '—' }}</td>
+          <td>
+            {% if b.active %}
+            <span class="badge badge-block">Active</span>
+            {% else %}
+            <span class="badge badge-disabled">Recent</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="6" class="text-muted" style="text-align:center;padding:20px">No blocked IPs recorded.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
   </div>
 </div>
 
@@ -194,6 +248,49 @@ refreshConnections = async function() {
   } catch (e) {}
 };
 
+function sourceBadge(src) {
+  if (src === 'IPS') return 'critical';
+  if (src === 'DDoS') return 'block';
+  if (src === 'Manual') return 'warn';
+  return 'disabled';
+}
+
+function fmtTs(ts) {
+  if (!ts) return '—';
+  return String(ts).replace('T', ' ').slice(0, 19);
+}
+
+function filterBlocked() {
+  const q = (document.getElementById('blocked-search')?.value || '').toLowerCase();
+  document.querySelectorAll('#blocked-tbody tr').forEach(row => {
+    row.style.display = !q || row.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+
+async function refreshBlocked() {
+  if (paused) return;
+  const tbody = document.getElementById('blocked-tbody');
+  if (!tbody) return;
+  try {
+    const data = await GET('/api/monitor/blocked');
+    const ips = data.ips || [];
+    const countEl = document.getElementById('blocked-ip-count');
+    if (countEl) countEl.textContent = data.count || ips.length;
+    tbody.innerHTML = ips.length === 0
+      ? '<tr><td colspan="6" class="text-muted" style="text-align:center;padding:20px">No blocked IPs recorded.</td></tr>'
+      : ips.map(b => `
+      <tr>
+        <td class="font-mono"><a href="/logs?search=${encodeURIComponent(b.ip)}" style="color:inherit">${b.ip}</a></td>
+        <td><span class="badge badge-${sourceBadge(b.source)}">${b.source}</span></td>
+        <td class="text-muted">${b.reason || '—'}</td>
+        <td class="font-mono">${b.hits}</td>
+        <td class="font-mono text-muted">${fmtTs(b.last_seen)}</td>
+        <td>${b.active ? '<span class="badge badge-block">Active</span>' : '<span class="badge badge-disabled">Recent</span>'}</td>
+      </tr>`).join('');
+    filterBlocked();
+  } catch (e) {}
+}
+
 async function refreshIfaceStats() {
   try {
     const ifaces = await GET('/api/monitor/interfaces');
@@ -225,11 +322,15 @@ async function refreshNetStats() {
 document.addEventListener('DOMContentLoaded', () => {
   const si = document.getElementById('search-input');
   if (si) si.addEventListener('input', filterConnections);
+  const bs = document.getElementById('blocked-search');
+  if (bs) bs.addEventListener('input', filterBlocked);
 });
 
 setInterval(refreshNetStats, 5000);
 setInterval(refreshIfaceStats, 10000);
+setInterval(refreshBlocked, 4000);
 refreshNetStats();
 refreshIfaceStats();
+refreshBlocked();
 </script>
 {% endblock %}

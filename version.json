@@ -1,5 +1,8 @@
 {
-  "version": "1.0.11",
-  "date": "2026-08-16",
-  "product": "FGUARD UTC"
+  "version": "1.0.12",
+  "date": "2026-09-06",
+  "product": "FGUARD UTC",
+  "changelog": [
+    "Monitor: live table of blocked IPs (IPS, DDoS, manual blocklist, recent BLOCK/THREAT logs)"
+  ]
 }

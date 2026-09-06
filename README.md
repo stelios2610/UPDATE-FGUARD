@@ -51,6 +51,9 @@ The update system **never overwrites** the following paths on the target server:
 
 ## Changelog
 
+### v1.0.12 — 2026-09-06
+- Monitor: live table of blocked IPs (IPS, DDoS, manual blocklist, recent BLOCK/THREAT logs)
+
 ### v1.0.11 — 2026-08-16
 - Feat: VLAN DHCP now supports custom gateway, DNS1, DNS2 per VLAN
 - Automatic DB migration (ALTER TABLE vlans) for existing installations

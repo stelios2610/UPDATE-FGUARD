@@ -378,9 +378,12 @@ async def blocked_page(request: Request):
 
 @app.get("/monitor", response_class=HTMLResponse)
 async def monitor_page(request: Request):
+    blocked = monitor.get_blocked_activity()
     return _ctx(request, template="monitor.html",
                 connections=monitor.get_connections(),
-                ifaces=monitor.get_per_interface_stats())
+                ifaces=monitor.get_per_interface_stats(),
+                blocked_ips=blocked["ips"],
+                blocked_count=blocked["count"])
 
 @app.get("/logs", response_class=HTMLResponse)
 async def logs_page(request: Request, action: Optional[str] = None,
@@ -1479,6 +1482,9 @@ async def api_net_stats():
     return {**n,"bytes_sent_fmt":monitor.format_bytes(n["bytes_sent"]),"bytes_recv_fmt":monitor.format_bytes(n["bytes_recv"])}
 @app.get("/api/monitor/interfaces")
 async def api_ifaces(): return [{"name":k,**v} for k,v in monitor.get_per_interface_stats().items()]
+@app.get("/api/monitor/blocked")
+async def api_monitor_blocked():
+    return monitor.get_blocked_activity()
 
 @app.get("/api/logs")
 async def api_logs(limit:int=100, action:Optional[str]=None, search:Optional[str]=None):
