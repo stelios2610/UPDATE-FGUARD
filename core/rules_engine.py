@@ -238,10 +238,77 @@ def _setup_linux_forwarding():
         return False
 
 
+def _detect_wan_iface():
+    """WAN iface from the default route, then DB, then ens1."""
+    try:
+        result = subprocess.run(
+            ["ip", "route", "show", "default"],
+            capture_output=True, text=True, timeout=3,
+        )
+        tokens = result.stdout.split()
+        if "dev" in tokens:
+            return tokens[tokens.index("dev") + 1]
+    except Exception:
+        pass
+    try:
+        ifaces = database.get_interfaces()
+        for iface in ifaces:
+            if iface.get("type") == "WAN" or iface.get("role") == "WAN":
+                name = iface.get("name") or ""
+                if name:
+                    return name
+    except Exception:
+        pass
+    return "ens1"
+
+
+def _nft_has_wan_masquerade(wan_iface):
+    try:
+        result = subprocess.run(
+            ["nft", "list", "chain", "ip", "nat", "POSTROUTING"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return False
+        return f'oifname "{wan_iface}" masquerade' in result.stdout
+    except Exception:
+        return False
+
+
 def _setup_nat_masquerade(wan_iface):
-    """Enable NAT masquerade on WAN interface (router mode)."""
-    _ipt(["-t", "nat", "-A", "POSTROUTING", "-o", wan_iface, "-j", "MASQUERADE"])
-    return True
+    """Enable NAT masquerade on WAN (idempotent — safe on every boot)."""
+    ok, _, _ = run([
+        "iptables", "-t", "nat", "-C", "POSTROUTING",
+        "-o", wan_iface, "-j", "MASQUERADE",
+    ])
+    if ok:
+        return True
+    ok, _msg = _ipt([
+        "-t", "nat", "-A", "POSTROUTING",
+        "-o", wan_iface, "-j", "MASQUERADE",
+    ])
+    if ok:
+        return True
+    if _nft_has_wan_masquerade(wan_iface):
+        return True
+    subprocess.run(
+        ["nft", "insert", "rule", "ip", "nat", "POSTROUTING",
+         "oifname", wan_iface, "masquerade"],
+        capture_output=True, text=True, timeout=5,
+    )
+    return _nft_has_wan_masquerade(wan_iface)
+
+
+def ensure_lan_nat_masquerade():
+    """Re-apply LAN→WAN MASQUERADE on startup so it survives reboot/nft restore."""
+    if not IS_LINUX:
+        return False, "Linux only"
+    wan_iface = _detect_wan_iface()
+    _setup_linux_forwarding()
+    _setup_nat_masquerade(wan_iface)
+    run(["netfilter-persistent", "save"])
+    database.add_log("INFO", details=f"LAN NAT masquerade ensured on {wan_iface}")
+    return True, wan_iface
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────

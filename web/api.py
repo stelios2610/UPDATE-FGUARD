@@ -76,6 +76,15 @@ if _IS_LINUX:
     except Exception:
         pass
 
+# Re-apply LAN→WAN MASQUERADE on every startup. VPN NAT is restored below,
+# but LAN masquerade is not rebuilt unless we do it here — after reboot the
+# nft/iptables restore can drop it and Stelios clients lose internet.
+if _IS_LINUX:
+    try:
+        rules_engine.ensure_lan_nat_masquerade()
+    except Exception:
+        pass
+
 # Re-apply SSL VPN internet NAT rules on startup (needed on new servers)
 if _IS_LINUX:
     try:

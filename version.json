@@ -1,8 +1,8 @@
 {
-  "version": "1.0.12",
-  "date": "2026-09-06",
+  "version": "1.0.13",
+  "date": "2026-09-11",
   "product": "FGUARD UTC",
   "changelog": [
-    "Monitor: live table of blocked IPs (IPS, DDoS, manual blocklist, recent BLOCK/THREAT logs)"
+    "Fix: restore LAN NAT masquerade on every startup so LAN internet survives reboot"
   ]
 }
