@@ -14,6 +14,30 @@ if ! iptables -t nat -C POSTROUTING -o "$WAN_IF" -j MASQUERADE 2>/dev/null; then
     netfilter-persistent save 2>/dev/null || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
 fi
 
+# ── IPSec vs WireGuard route steal ───────────────────────────────────────────
+# Added in v1.0.14: wg0 AllowedIPs must not hide StrongSwan table 220.
+if ip route show table 220 2>/dev/null | grep -q .; then
+    while read -r dest _; do
+        [ -n "$dest" ] || continue
+        ip rule add to "$dest" lookup 220 priority 220 2>/dev/null || true
+        ip route del "$dest" dev wg0 2>/dev/null || true
+    done < <(ip route show table 220 | awk '{print $1}')
+fi
+
+# ── Drop invalid IPv4 dhcp-range relay that crashes dnsmasq 2.92 ─────────────
+if [ -f /etc/dnsmasq.d/aegisguard.conf ]; then
+    if grep -q 'dhcp-range=.*,relay,' /etc/dnsmasq.d/aegisguard.conf 2>/dev/null; then
+        sed -i '/dhcp-range=.*,relay,/d' /etc/dnsmasq.d/aegisguard.conf
+        systemctl try-restart dnsmasq 2>/dev/null || true
+    fi
+fi
+
+# ── Restore GeoIP chain ──────────────────────────────────────────────────────
+# Added in v1.0.14
+if [ -f "${BASE_DIR}/core/geoblock.py" ]; then
+    ( cd "${BASE_DIR}" && python3 -c "from core.geoblock import restore_geoblock; restore_geoblock()" ) 2>/dev/null || true
+fi
+
 # ── Ensure wg0 INPUT rule exists ─────────────────────────────────────────────
 # Added in v1.0.4: WireGuard traffic arriving on wg0 must be accepted in INPUT
 if ! iptables -C INPUT -i wg0 -j ACCEPT 2>/dev/null; then

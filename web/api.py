@@ -51,6 +51,11 @@ if _IS_LINUX:
         rules_engine._ensure_chains()
     except Exception:
         pass
+    try:
+        from core import geoblock as _gb
+        _gb.restore_geoblock()
+    except Exception:
+        pass
 
 # Re-apply web filter iptables rules on every startup so they survive reboots.
 # Must run AFTER _ensure_chains() so our DROP rules land at position 1
@@ -1183,7 +1188,9 @@ async def api_save_geoip(request: Request):
     data = await request.json()
     codes = data.get("blocked_countries", [])
     database.set_setting("blocked_countries", _json.dumps(codes))
-    return {"status": "ok"}
+    from core import geoblock
+    ok, msg = geoblock.apply_geoblock()
+    return {"status": "ok" if ok else "error", "message": msg}
 
 @app.post("/api/security/ddos/config")
 async def api_ddos_config(request: Request):
@@ -1198,7 +1205,9 @@ async def api_set_geo(request: Request):
     data = await request.json()
     import json as _json
     database.set_setting("blocked_countries", _json.dumps(data.get("countries",[])))
-    return {"status":"ok"}
+    from core import geoblock
+    ok, msg = geoblock.apply_geoblock()
+    return {"status": "ok" if ok else "error", "message": msg}
 @app.post("/api/security/geo/lookup")
 async def api_geo_lookup(request: Request):
     data = await request.json(); return reputation.lookup_ip(data.get("ip",""))

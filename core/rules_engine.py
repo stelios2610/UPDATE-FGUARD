@@ -128,17 +128,20 @@ def _ensure_chains():
     for chain in ("INPUT", "OUTPUT", "FORWARD"):
         ag_chain = f"{CHAIN_PREFIX}_{chain}"
         _ipt(["-N", ag_chain])
-        # Always ensure ESTABLISHED/RELATED is rule #1 in each chain
-        # so that reply packets are never blocked regardless of other rules.
-        # Flush first to avoid duplicates, then re-add as rule 1.
-        _ipt(["-F", ag_chain])
-        _ipt(["-I", ag_chain, "1",
-              "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"])
-        # Also always allow loopback in INPUT
+        # Do not flush: GeoIP and other INPUT rules live in AEGISGUARD_INPUT.
+        # A flush on every aegisguard start silently disables geoblock.
+        ok, _, _ = run([
+            "iptables", "-C", ag_chain,
+            "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT",
+        ])
+        if not ok:
+            _ipt(["-I", ag_chain, "1",
+                  "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"])
         if chain == "INPUT":
-            _ipt(["-I", ag_chain, "2", "-i", "lo", "-j", "ACCEPT"])
-        # Jump from main chain if not already there
-        ok, out, _ = run(["iptables", "-C", chain, "-j", ag_chain])
+            ok, _, _ = run(["iptables", "-C", ag_chain, "-i", "lo", "-j", "ACCEPT"])
+            if not ok:
+                _ipt(["-I", ag_chain, "2", "-i", "lo", "-j", "ACCEPT"])
+        ok, _, _ = run(["iptables", "-C", chain, "-j", ag_chain])
         if not ok:
             _ipt(["-I", chain, "1", "-j", ag_chain])
 
@@ -306,6 +309,11 @@ def ensure_lan_nat_masquerade():
     wan_iface = _detect_wan_iface()
     _setup_linux_forwarding()
     _setup_nat_masquerade(wan_iface)
+    try:
+        from core.bov_manager import pin_ipsec_nat_rules
+        pin_ipsec_nat_rules()
+    except Exception:
+        pass
     run(["netfilter-persistent", "save"])
     database.add_log("INFO", details=f"LAN NAT masquerade ensured on {wan_iface}")
     return True, wan_iface

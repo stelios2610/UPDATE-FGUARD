@@ -516,8 +516,10 @@ async function unblockAllDDoS() {
 async function saveGeoIP() {
   const codes = Array.from(document.querySelectorAll('.geoip-cb:checked')).map(cb => cb.value);
   try {
-    await POST('/api/security/geoip', { blocked_countries: codes });
-    toast(`${codes.length} countries blocked`, 'success');
+    toast('Applying GeoIP firewall rules — this can take a minute…', 'info');
+    const r = await POST('/api/security/geoip', { blocked_countries: codes });
+    if (r.status === 'error') throw new Error(r.message || 'apply failed');
+    toast(r.message || `${codes.length} countries blocked`, 'success');
   } catch (e) { toast('Error: ' + e.message, 'error'); }
 }
 

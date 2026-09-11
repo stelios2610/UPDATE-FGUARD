@@ -1,11 +1,9 @@
 """Geoblock — network-level country blocking via ipset + iptables.
 
 Reads blocked_countries from DB, builds a whitelist ipset of allowed
-country CIDRs, and installs a DROP rule in AEGISGUARD_INPUT so all
-WAN traffic from blocked countries is silently dropped before reaching
-any service.  VPN ports (1194, 51820) are always allowed regardless of country so
-the admin can connect from anywhere.  IPSec (500/4500) is excluded —
-it runs over WireGuard, not the internet.
+country CIDRs, and DROPs WAN traffic from everywhere else in
+AEGISGUARD_INPUT (including VPN ports). Private WAN ranges (Cosmote LAN)
+are exempt so the firewall stays reachable on 192.168.100.0/24.
 """
 import os
 import json
@@ -21,14 +19,8 @@ CHAIN        = "AEGISGUARD_INPUT"
 WAN_IFACE    = None          # auto-detected from DB
 COMMENT_TAG  = "aegis_geoblock"
 
-# Ports that must stay open regardless of country (VPN access from abroad)
-# NOTE: IPSec (500/4500) intentionally excluded — IPSec runs over WireGuard,
-# not directly over the internet. Exposing 500/4500 attracts IKE scanners.
-_VPN_PORTS = [
-    ("udp", "1194"),   # OpenVPN
-    ("tcp", "1194"),   # OpenVPN TCP
-    ("udp", "51820"),  # WireGuard
-]
+# VPN ports follow GeoIP like everything else. Leaving 51820/1194 always
+# ACCEPT is why WAN scanners still show up as "attacks from many IPs".
 
 # Country CIDR source: ipdeny.com (free, no key needed)
 _CIDR_URL = "https://www.ipdeny.com/ipblocks/data/aggregated/{cc}-aggregated.zone"
@@ -176,22 +168,98 @@ def _apply_chain_rules(wan):
         subprocess.run("iptables -A %s %s" % (CHAIN, args), shell=True)
 
     # 1. Always allow established/related (responses to server's outbound)
-    ipt("-m state --state RELATED,ESTABLISHED -j ACCEPT")
+    ipt("-m state --state ESTABLISHED,RELATED -j ACCEPT")
+    ipt("-i lo -j ACCEPT")
 
-    # 2. LAN traffic: skip geoblock (RETURN to INPUT chain)
+    # 2. Private ranges on WAN (Cosmote LAN 192.168.100.0/24, etc.)
+    ipt("-i %s -s 10.0.0.0/8 -j RETURN" % wan)
+    ipt("-i %s -s 172.16.0.0/12 -j RETURN" % wan)
+    ipt("-i %s -s 192.168.0.0/16 -j RETURN" % wan)
+
+    # 3. LAN / non-WAN traffic: skip geoblock
     ipt("! -i %s -j RETURN" % wan)
 
-    # 3. VPN ports: always open from any country (admin can connect from abroad)
-    for proto, port in _VPN_PORTS:
-        ipt("-i %s -p %s --dport %s -j ACCEPT" % (wan, proto, port))
+    # 4. Management never on the public WAN — EU scanners were still
+    #    hitting SSH/GUI because EU is in the GeoIP allow list.
+    ipt("-i %s -p tcp -m multiport --dports 22,80,8080,8888 -j DROP" % wan)
+    ipt("-i %s -p tcp --dport 1194 -j DROP" % wan)
+    ipt("-i %s -p udp --dport 1194 -j DROP" % wan)
 
-    # 4. Allow IPs from allowed countries
+    # 5. IKE / NAT-T / WireGuard only from known site-to-site peers
+    peers = _s2s_peer_ips()
+    for peer in peers:
+        ipt("-i %s -p udp -m multiport --dports 500,4500,51820 -s %s -j ACCEPT" % (wan, peer))
+    if peers:
+        ipt("-i %s -p udp -m multiport --dports 500,4500,51820 -j DROP" % wan)
+
+    # 6. Allow remaining WAN from allowed countries
     ipt("-i %s -m set --match-set %s src -j ACCEPT" % (wan, IPSET_NAME))
 
-    # 5. DROP everything else from WAN
+    # 7. DROP everything else from WAN
     ipt("-i %s -j DROP" % wan)
 
+    _ensure_input_jump()
+    _apply_ipv6_wan_drop(wan)
     print("AEGISGUARD_INPUT chain rebuilt with geoblock")
+
+
+def _s2s_peer_ips():
+    """Public IPs of WireGuard / IPSec peers (Tavros etc.)."""
+    peers = set()
+    try:
+        out = subprocess.check_output(["wg", "show", "all", "endpoints"], text=True, timeout=3)
+        for line in out.splitlines():
+            # iface\tpubkey\t1.2.3.4:51820
+            parts = line.split()
+            if len(parts) >= 3 and ":" in parts[-1]:
+                host = parts[-1].rsplit(":", 1)[0].strip("[]")
+                if host and host[0].isdigit():
+                    peers.add(host)
+    except Exception:
+        pass
+    if not peers:
+        peers.add("94.71.89.93")
+    return sorted(peers)
+
+
+def _apply_ipv6_wan_drop(wan):
+    """IPv6 had policy ACCEPT and no GeoIP — scanners hit [::]:22."""
+    chain = "AEGISGUARD_INPUT6"
+    subprocess.run("ip6tables -N %s 2>/dev/null" % chain, shell=True)
+    subprocess.run("ip6tables -F %s" % chain, shell=True)
+    subprocess.run("ip6tables -A %s -m state --state ESTABLISHED,RELATED -j ACCEPT" % chain, shell=True)
+    subprocess.run("ip6tables -A %s -i lo -j ACCEPT" % chain, shell=True)
+    subprocess.run("ip6tables -A %s -p ipv6-icmp -j ACCEPT" % chain, shell=True)
+    subprocess.run("ip6tables -A %s -i %s -p udp --dport 546 -j ACCEPT" % (chain, wan), shell=True)
+    subprocess.run("ip6tables -A %s ! -i %s -j RETURN" % (chain, wan), shell=True)
+    subprocess.run("ip6tables -A %s -i %s -j DROP" % (chain, wan), shell=True)
+    subprocess.run("ip6tables -D INPUT -j %s 2>/dev/null" % chain, shell=True)
+    subprocess.run("ip6tables -I INPUT 1 -j %s" % chain, shell=True)
+
+
+def _ensure_input_jump():
+    """Geo chain must be first in INPUT. A jump at the bottom is a no-op
+    because UDP 500/4500 and LAN ACCEPTs already matched."""
+    subprocess.run("iptables -N %s 2>/dev/null" % CHAIN, shell=True)
+    subprocess.run("iptables -D INPUT -j %s 2>/dev/null" % CHAIN, shell=True)
+    subprocess.run("iptables -I INPUT 1 -j %s" % CHAIN, shell=True)
+
+
+def restore_geoblock():
+    """Re-hook saved ipset after boot/restart without re-downloading CIDRs."""
+    if not IS_LINUX:
+        return False, "Not Linux"
+    if database.get_setting("geoblock_enabled", "0") != "1":
+        return False, "disabled"
+    r = subprocess.run("ipset list %s -name" % IPSET_NAME, shell=True, capture_output=True)
+    if r.returncode != 0:
+        if os.path.isfile(IPSET_SAVE):
+            subprocess.run("ipset restore -f %s" % IPSET_SAVE, shell=True)
+        r = subprocess.run("ipset list %s -name" % IPSET_NAME, shell=True, capture_output=True)
+        if r.returncode != 0:
+            return False, "ipset missing — click Apply in GeoIP Blocking"
+    _apply_chain_rules(_get_wan_iface())
+    return True, "Geoblock restored"
 
 
 def remove_geoblock():
@@ -272,13 +340,17 @@ if ! ipset list $IPSET -name &>/dev/null; then
 fi
 
 iptables -F $CHAIN 2>/dev/null
-iptables -A $CHAIN -m state --state RELATED,ESTABLISHED -j ACCEPT
+iptables -N $CHAIN 2>/dev/null
+iptables -A $CHAIN -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A $CHAIN -i lo -j ACCEPT
+iptables -A $CHAIN -i $WAN -s 10.0.0.0/8 -j RETURN
+iptables -A $CHAIN -i $WAN -s 172.16.0.0/12 -j RETURN
+iptables -A $CHAIN -i $WAN -s 192.168.0.0/16 -j RETURN
 iptables -A $CHAIN ! -i $WAN -j RETURN
-iptables -A $CHAIN -i $WAN -p udp --dport 1194 -j ACCEPT
-iptables -A $CHAIN -i $WAN -p tcp --dport 1194 -j ACCEPT
-iptables -A $CHAIN -i $WAN -p udp --dport 51820 -j ACCEPT
 iptables -A $CHAIN -i $WAN -m set --match-set $IPSET src -j ACCEPT
 iptables -A $CHAIN -i $WAN -j DROP
+iptables -D INPUT -j $CHAIN 2>/dev/null
+iptables -I INPUT 1 -j $CHAIN
 echo "fguard-geoblock-rules: AEGISGUARD_INPUT rebuilt (wan=$WAN, ipset=$IPSET)" | systemd-cat -t fguard
 """.format(wan=wan)
 
@@ -295,7 +367,9 @@ Requires=aegisguard-geoblock.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/fguard-geoblock-rules.sh
+WorkingDirectory=/opt/aegisguard
+Environment=PYTHONPATH=/opt/aegisguard
+ExecStart=/usr/bin/python3 -c "from core.geoblock import restore_geoblock; restore_geoblock()"
 RemainAfterExit=yes
 
 [Install]

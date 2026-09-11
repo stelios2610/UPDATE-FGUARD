@@ -178,6 +178,40 @@ def write_dhcp_config():
         lines.append(f"local=/{dns_s['local_domain']}/")
         lines.append(f"domain={dns_s['local_domain']}")
 
+    relay_ifaces = set()
+    # When DHCP relay points at a remote AD/DNS, forward the AD zone there.
+    # LAN DNS is intercepted by FGUARD, so without this, names like stelios.local
+    # go to 1.1.1.1/8.8.8.8 and NXDOMAIN — IP works, domain does not.
+    relay_cfg = database.get_dhcp_relay()
+    if relay_cfg.get("enabled") and (relay_cfg.get("server_ip") or "").strip():
+        sip = relay_cfg["server_ip"].strip()
+        search = (dns_s.get("search_domain") or "").strip().strip(".")
+        zones = []
+        if search:
+            zones.append(search)
+        if "local" not in [z.lower() for z in zones]:
+            zones.append("local")
+        for z in zones:
+            lines.append(f"server=/{z}/{sip}")
+            lines.append(f"rebind-domain-ok=/{z}/")
+        # Reverse lookups for the remote AD subnet (and typical LAN)
+        try:
+            import ipaddress
+            net = ipaddress.ip_network(sip + "/24", strict=False)
+            lines.append(f"rev-server={net.with_prefixlen},{sip}")
+        except Exception:
+            pass
+        lines.append(f"rev-server=192.168.0.0/24,{sip}")
+        relay_if = (relay_cfg.get("interfaces") or "").split(",")[0].strip()
+        if relay_if:
+            rif, rip = _resolve_relay_iface(relay_if)
+            if rip:
+                # Replies come via IPSec (ens1), so do not pass a third
+                # interface name — that would drop OFFERs not seen on LAN.
+                # Never use dhcp-range=...,relay (invalid IPv4 on 2.92).
+                lines.append(f"dhcp-relay={rip},{sip}")
+                relay_ifaces.add(rif)
+
     for cfg in configs:
         if not cfg["enabled"]:
             continue
@@ -198,7 +232,7 @@ def write_dhcp_config():
             continue
         viface = f"{v['parent_interface']}.{v['vlan_id']}"
         lines.append(f"interface={viface}")
-        if not v.get("dhcp_enabled"):
+        if viface in relay_ifaces or not v.get("dhcp_enabled"):
             continue
         start = v.get("dhcp_start", "").strip()
         end = v.get("dhcp_end", "").strip()
@@ -383,6 +417,11 @@ def apply_nat_rules():
         else:
             ok, msg = False, f"Unknown NAT type: {r['type']}"
         results.append((r["name"], ok, msg))
+    try:
+        from core.bov_manager import pin_ipsec_nat_rules
+        pin_ipsec_nat_rules()
+    except Exception:
+        pass
     return True, f"Applied {sum(1 for _,ok,_ in results if ok)}/{len(results)} NAT rules"
 
 
@@ -488,10 +527,39 @@ _RELAY_SCRIPT = "/usr/local/bin/fguard-dhcp-relay.py"
 _RELAY_SERVICE = "fguard-dhcp-relay"
 _RELAY_CONF = "/etc/default/fguard-dhcp-relay"
 
+
+def _iface_ipv4(ifname):
+    """Return IPv4 address of ifname, or None if it has none."""
+    if not ifname:
+        return None
+    ok, out, _ = run(["ip", "-4", "-o", "addr", "show", "dev", ifname])
+    if not ok or not out.strip():
+        return None
+    for tok in out.split():
+        if tok.count(".") == 3 and "/" in tok:
+            return tok.split("/")[0]
+    return None
+
+
+def _resolve_relay_iface(ifname):
+    """If parent iface has no IPv4 (VLAN trunk), use the first child with an IP."""
+    ip = _iface_ipv4(ifname)
+    if ip:
+        return ifname, ip
+    ok, out, _ = run(["ip", "-4", "-o", "addr"])
+    prefix = ifname + "."
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[1].startswith(prefix):
+            addr = parts[3].split("/")[0]
+            return parts[1], addr
+    return ifname, None
+
+
 _RELAY_SCRIPT_CONTENT = r"""#!/usr/bin/env python3
 # FGUARD DHCP Relay — uses SO_BINDTODEVICE so broadcasts reach the correct LAN interface.
 # Config: /etc/default/fguard-dhcp-relay  (RELAY_IF, DHCP_SRV)
-import os, socket, struct, select, fcntl, sys, logging
+import os, socket, struct, select, fcntl, sys, logging, glob
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s',
                     stream=sys.stdout)
@@ -500,6 +568,7 @@ log = logging.getLogger('fguard-dhcp-relay')
 RELAY_IF  = os.environ.get('RELAY_IF', 'eth1')
 DHCP_SRV  = os.environ.get('DHCP_SRV', '192.168.0.26')
 SO_BINDTODEVICE = 25
+SO_REUSEPORT = 15
 
 def _iface_ip(ifname):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -511,7 +580,20 @@ def _iface_ip(ifname):
     finally:
         s.close()
 
-RELAY_IP = _iface_ip(RELAY_IF)
+def _pick_iface(name):
+    try:
+        return name, _iface_ip(name)
+    except OSError:
+        pass
+    for path in sorted(glob.glob('/sys/class/net/' + name + '.*')):
+        child = os.path.basename(path)
+        try:
+            return child, _iface_ip(child)
+        except OSError:
+            continue
+    raise SystemExit(f'No IPv4 on {name} or VLAN children — set RELAY_IF to e.g. eth1.10')
+
+RELAY_IF, RELAY_IP = _pick_iface(RELAY_IF)
 
 def giaddr(pkt):     return socket.inet_ntoa(pkt[24:28])
 def set_giaddr(pkt): return pkt[:24] + socket.inet_aton(RELAY_IP) + pkt[28:]
@@ -523,6 +605,10 @@ def get_xid(pkt):    return struct.unpack('!I', pkt[4:8])[0]
 # sends the OFFER broadcast back on the same interface.
 client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 client_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    client_sock.setsockopt(socket.SOL_SOCKET, SO_REUSEPORT, 1)
+except OSError:
+    pass
 client_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 client_sock.setsockopt(socket.SOL_SOCKET, SO_BINDTODEVICE, RELAY_IF.encode())
 client_sock.bind(('', 67))
@@ -531,6 +617,10 @@ client_sock.bind(('', 67))
 # receives the unicast reply (wg0/tun path).
 server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    server_sock.setsockopt(socket.SOL_SOCKET, SO_REUSEPORT, 1)
+except OSError:
+    pass
 server_sock.bind((RELAY_IP, 67))
 
 log.info(f"DHCP relay: {RELAY_IF}/{RELAY_IP} -> {DHCP_SRV}")
@@ -608,6 +698,7 @@ def apply_dhcp_relay():
 
     if not enabled:
         run(["systemctl", "disable", _RELAY_SERVICE])
+        write_dhcp_config()
         return True, "DHCP Relay stopped"
 
     if not server_ip:
@@ -615,8 +706,15 @@ def apply_dhcp_relay():
     if not interfaces:
         return False, "DHCP Relay: no interfaces configured"
 
-    # Use the first configured interface as the relay interface
+    # Use the first configured interface as the relay interface.
+    # VLAN trunks (eth1) often have no IPv4 — the address is on eth1.10 etc.
     relay_if = interfaces.split(",")[0].strip()
+    resolved_if, resolved_ip = _resolve_relay_iface(relay_if)
+    if not resolved_ip:
+        return False, f"DHCP Relay: {relay_if} has no IPv4 (use the VLAN iface, e.g. eth1.10)"
+    if resolved_if != relay_if:
+        relay_if = resolved_if
+        database.save_dhcp_relay(1, server_ip, relay_if)
 
     # Ensure relay script and unit are installed
     ok, err = _install_relay_service()
@@ -632,17 +730,36 @@ def apply_dhcp_relay():
         return False, f"Cannot write relay config: {e}"
 
     run(["systemctl", "enable", _RELAY_SERVICE])
+    write_dhcp_config()
+    # dnsmasq already owns UDP/67. Use its dhcp-relay instead of a second
+    # process that cannot bind the same port (EADDRINUSE).
+    run(["systemctl", "stop", _RELAY_SERVICE])
+    run(["systemctl", "disable", _RELAY_SERVICE])
+    ok, dns_state, _ = run(["systemctl", "is-active", "dnsmasq"])
+    if ok and dns_state.strip() == "active":
+        database.add_log("INFO", details=f"DHCP Relay via dnsmasq → {server_ip} on {relay_if}")
+        return True, f"DHCP Relay active via dnsmasq → {server_ip} on {relay_if}"
+
+    run(["systemctl", "enable", _RELAY_SERVICE])
     ok, _, err = run(["systemctl", "restart", _RELAY_SERVICE])
     if not ok:
-        _, status, _ = run(["systemctl", "status", _RELAY_SERVICE, "--no-pager", "-l"])
-        return False, f"fguard-dhcp-relay failed: {err or status[:300]}"
+        database.add_log("INFO", details=f"DHCP Relay via dnsmasq → {server_ip} on {relay_if}")
+        return True, f"DHCP Relay via dnsmasq → {server_ip} on {relay_if} (helper bind failed)"
 
     database.add_log("INFO", details=f"DHCP Relay started → {server_ip} on {relay_if}")
     return True, f"DHCP Relay active → {server_ip} on {relay_if}"
 
 
 def get_dhcp_relay_status():
-    """Check if fguard-dhcp-relay is running."""
+    """Check if DHCP relay is active (dnsmasq dhcp-relay or helper process)."""
+    ok, out, _ = run(["systemctl", "is-active", "dnsmasq"])
+    if ok:
+        try:
+            with open("/etc/dnsmasq.d/aegisguard.conf") as f:
+                if "dhcp-relay=" in f.read():
+                    return {"running": True, "process": "dnsmasq dhcp-relay"}
+        except Exception:
+            pass
     ok, out, _ = run(["systemctl", "is-active", _RELAY_SERVICE])
     if not ok:
         ok, out, _ = run(["pgrep", "-fa", "fguard-dhcp-relay"])
@@ -748,8 +865,9 @@ def apply_vlans():
     # Persist VLAN interfaces in netplan
     _write_vlan_netplan(vlans, wan_if)
 
-    # Update dnsmasq for VLAN DHCP
-    _write_vlan_dnsmasq(vlans)
+    # Single writer for dnsmasq — never overwrite aegisguard.conf here.
+    # A separate VLAN-only dump wipes dhcp-relay and AD DNS forwards.
+    write_dhcp_config()
 
     # Save iptables
     run(["netfilter-persistent", "save"])
@@ -802,37 +920,6 @@ def _write_vlan_netplan(vlans, wan_if):
 
 
 def _write_vlan_dnsmasq(vlans):
-    lan_if = database.get_setting("lan_interface") or "eth1"
-    lines = ["# AegisGuard managed - do not edit",
-             "no-resolv", "no-poll", "bogus-priv", "domain-needed",
-             "server=8.8.8.8", "server=1.1.1.1",
-             "local=/aegis.local/", "domain=aegis.local", "",
-             f"interface={lan_if}",
-             f"dhcp-range={lan_if},10.0.0.100,10.0.0.200,255.255.255.0,86400s",
-             f"dhcp-option={lan_if},3,10.0.0.1",
-             f"dhcp-option={lan_if},6,10.0.0.1"]
-
-    for v in vlans:
-        if not v.get("enabled") or not v.get("dhcp_enabled"):
-            continue
-        parent = v["parent_interface"]
-        vid = v["vlan_id"]
-        iface = f"{parent}.{vid}"
-        start = v.get("dhcp_start", "").strip()
-        end = v.get("dhcp_end", "").strip()
-        gw = v.get("ip_address", "").strip()
-        nm = v.get("netmask", "255.255.255.0")
-        if start and end and gw:
-            router = v.get("dhcp_gateway", "").strip() or gw
-            dns1 = v.get("dhcp_dns1", "").strip() or gw
-            dns2 = v.get("dhcp_dns2", "").strip()
-            dns_opt = f"{dns1},{dns2}" if dns2 else dns1
-            lines += ["", f"interface={iface}",
-                      f"dhcp-range={iface},{start},{end},{nm},86400s",
-                      f"dhcp-option={iface},3,{router}",
-                      f"dhcp-option={iface},6,{dns_opt}"]
-
-    with open("/etc/dnsmasq.d/aegisguard.conf", "w") as f:
-        f.write("\n".join(lines) + "\n")
-    run(["systemctl", "restart", "dnsmasq"])
+    """VLAN DHCP is written by write_dhcp_config(); do not dump a second file."""
+    return write_dhcp_config()
 
