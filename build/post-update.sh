@@ -33,7 +33,7 @@ if [ -f /etc/dnsmasq.d/aegisguard.conf ]; then
 fi
 
 # ── Restore GeoIP chain ──────────────────────────────────────────────────────
-# Added in v1.0.14
+# v1.0.14: persist WAN lock. v1.0.15: OpenVPN 1194 is ACCEPT again.
 if [ -f "${BASE_DIR}/core/geoblock.py" ]; then
     ( cd "${BASE_DIR}" && python3 -c "from core.geoblock import restore_geoblock; restore_geoblock()" ) 2>/dev/null || true
 fi

@@ -57,16 +57,6 @@ if _IS_LINUX:
     except Exception:
         pass
 
-# Re-apply web filter iptables rules on every startup so they survive reboots.
-# Must run AFTER _ensure_chains() so our DROP rules land at position 1
-# (before the ACCEPT rules that _ensure_chains sets up).
-if _IS_LINUX:
-    try:
-        if database.get_setting("web_filter_enabled", "1") == "1":
-            web_filter.apply_filters()
-    except Exception:
-        pass
-
 # Apply DHCP config to dnsmasq on every startup so fresh installs work
 if _IS_LINUX:
     try:
@@ -96,6 +86,15 @@ if _IS_LINUX:
         _ssl_cfg = database.get_ssl_vpn_config()
         if _ssl_cfg and _ssl_cfg.get("redirect_gateway", 1) and ssl_vpn.is_pki_initialized():
             ssl_vpn.apply_vpn_internet_nat()
+    except Exception:
+        pass
+
+# DoH/QUIC drops last so they stay at FORWARD #1 after VPN/NAT ACCEPTs.
+# Do not call apply_filters() here — that restarts dnsmasq and can take DNS down.
+if _IS_LINUX:
+    try:
+        if database.get_setting("web_filter_enabled", "1") == "1":
+            web_filter._apply_dns_redirect()
     except Exception:
         pass
 

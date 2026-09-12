@@ -169,6 +169,9 @@ def _get_lan_interfaces():
     return list(dict.fromkeys(ifaces))  # deduplicate, preserve order
 
 
+WF_CHAIN = "AEGISGUARD_WEBFILTER"
+
+
 def _apply_dns_redirect():
     """Force all DNS queries from LAN clients through local dnsmasq."""
     for iface in _get_lan_interfaces():
@@ -178,13 +181,7 @@ def _apply_dns_redirect():
             if not ok:
                 run(["iptables", "-t", "nat", "-A", "PREROUTING",
                      "-i", iface, "-p", proto, "--dport", "53", "-j", "REDIRECT", "--to-port", "53"])
-        # Block DNS-over-TLS (port 853) — insert at top so it fires before ACCEPT rules
-        for proto in ("tcp", "udp"):
-            ok, _, _ = run(["iptables", "-C", "FORWARD",
-                            "-i", iface, "-p", proto, "--dport", "853", "-j", "DROP"])
-            if not ok:
-                run(["iptables", "-I", "FORWARD", "1",
-                     "-i", iface, "-p", proto, "--dport", "853", "-j", "DROP"])
+    _apply_forward_bypass_blocks()
 
 
 def _remove_dns_redirect():
@@ -195,6 +192,12 @@ def _remove_dns_redirect():
         for proto in ("tcp", "udp"):
             run(["iptables", "-D", "FORWARD",
                  "-i", iface, "-p", proto, "--dport", "853", "-j", "DROP"])
+    run(["iptables", "-D", "FORWARD", "-j", WF_CHAIN])
+    wan = _wan_iface()
+    for iface in _get_lan_interfaces():
+        run(["iptables", "-D", "FORWARD", "-i", iface, "-o", wan, "-j", WF_CHAIN])
+    run(["iptables", "-F", WF_CHAIN])
+    run(["iptables", "-X", WF_CHAIN])
 
 
 # ── DoH blocking (force DNS-over-HTTPS clients back to plain DNS) ─────────────
@@ -210,15 +213,49 @@ _DOH_IPS = [
 ]
 
 
-def _apply_doh_block():
+def _wan_iface():
+    ok, out, _ = run(["ip", "route", "show", "default"])
+    parts = (out or "").split()
+    if "dev" in parts:
+        return parts[parts.index("dev") + 1]
+    return "ens1"
+
+
+def _apply_forward_bypass_blocks():
+    """DoH / DoT / QUIC drops for LAN→WAN only.
+
+    Must not sit in front of tun0 (SSL VPN) or LAN→10.16.0.0/24 (remote
+    SSL VPN / AD). A bare `-j WEBFILTER` at FORWARD #1 plus udp/443 DROP
+    breaks OpenVPN and site-to-site HTTPS.
+    """
+    wan = _wan_iface()
+    run(["iptables", "-N", WF_CHAIN])
+    run(["iptables", "-F", WF_CHAIN])
+    run(["iptables", "-A", WF_CHAIN, "-i", "tun0", "-j", "RETURN"])
+    run(["iptables", "-A", WF_CHAIN, "-o", "tun0", "-j", "RETURN"])
+    run(["iptables", "-A", WF_CHAIN, "-d", "10.16.0.0/24", "-j", "RETURN"])
+    run(["iptables", "-A", WF_CHAIN, "-s", "10.16.0.0/24", "-j", "RETURN"])
+    run(["iptables", "-A", WF_CHAIN, "-d", "10.8.0.0/24", "-j", "RETURN"])
+    run(["iptables", "-A", WF_CHAIN, "-s", "10.8.0.0/24", "-j", "RETURN"])
     for iface in _get_lan_interfaces():
+        run(["iptables", "-A", WF_CHAIN, "-i", iface, "-p", "udp",
+             "--dport", "443", "-j", "DROP"])
+        for proto in ("tcp", "udp"):
+            run(["iptables", "-A", WF_CHAIN, "-i", iface, "-p", proto,
+                 "--dport", "853", "-j", "DROP"])
         for ip in _DOH_IPS:
             for proto in ("tcp", "udp"):
-                ok, _, _ = run(["iptables", "-C", "FORWARD",
-                                "-i", iface, "-p", proto, "-d", ip, "--dport", "443", "-j", "DROP"])
-                if not ok:
-                    run(["iptables", "-I", "FORWARD", "1",
-                         "-i", iface, "-p", proto, "-d", ip, "--dport", "443", "-j", "DROP"])
+                run(["iptables", "-A", WF_CHAIN, "-i", iface, "-p", proto,
+                     "-d", ip, "--dport", "443", "-j", "DROP"])
+    run(["iptables", "-A", WF_CHAIN, "-j", "RETURN"])
+    run(["iptables", "-D", "FORWARD", "-j", WF_CHAIN])
+    for iface in _get_lan_interfaces():
+        run(["iptables", "-D", "FORWARD", "-i", iface, "-o", wan, "-j", WF_CHAIN])
+        run(["iptables", "-I", "FORWARD", "1", "-i", iface, "-o", wan, "-j", WF_CHAIN])
+
+
+def _apply_doh_block():
+    _apply_forward_bypass_blocks()
 
 
 def _remove_doh_block():
@@ -234,12 +271,7 @@ def _remove_doh_block():
 # HTTP/2 requires a fresh DNS lookup → dnsmasq intercepts → blocked domains fail.
 
 def _apply_quic_block():
-    for iface in _get_lan_interfaces():
-        ok, _, _ = run(["iptables", "-C", "FORWARD",
-                        "-i", iface, "-p", "udp", "--dport", "443", "-j", "DROP"])
-        if not ok:
-            run(["iptables", "-I", "FORWARD", "1",
-                 "-i", iface, "-p", "udp", "--dport", "443", "-j", "DROP"])
+    _apply_forward_bypass_blocks()
 
 
 def _remove_quic_block():
@@ -262,8 +294,6 @@ def apply_filters():
         _write_hosts_filter(domains)
         run(["systemctl", "restart", "dnsmasq"])
         _apply_dns_redirect()
-        _apply_doh_block()
-        _apply_quic_block()
         database.add_log("INFO", details=f"Web filter applied: {len(domains)} domains blocked via dnsmasq + DoH/QUIC blocked")
         return ok, msg
 

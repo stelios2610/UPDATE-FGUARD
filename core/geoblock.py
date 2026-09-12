@@ -19,8 +19,8 @@ CHAIN        = "AEGISGUARD_INPUT"
 WAN_IFACE    = None          # auto-detected from DB
 COMMENT_TAG  = "aegis_geoblock"
 
-# VPN ports follow GeoIP like everything else. Leaving 51820/1194 always
-# ACCEPT is why WAN scanners still show up as "attacks from many IPs".
+# Site-to-site WG/IKE are peer-locked. SSL VPN 1194 is ACCEPTed on WAN
+# so road warriors can reach 192.168.0.254 and 10.16.0.1.
 
 # Country CIDR source: ipdeny.com (free, no key needed)
 _CIDR_URL = "https://www.ipdeny.com/ipblocks/data/aggregated/{cc}-aggregated.zone"
@@ -182,8 +182,12 @@ def _apply_chain_rules(wan):
     # 4. Management never on the public WAN — EU scanners were still
     #    hitting SSH/GUI because EU is in the GeoIP allow list.
     ipt("-i %s -p tcp -m multiport --dports 22,80,8080,8888 -j DROP" % wan)
-    ipt("-i %s -p tcp --dport 1194 -j DROP" % wan)
-    ipt("-i %s -p udp --dport 1194 -j DROP" % wan)
+
+    # SSL VPN (OpenVPN) must stay reachable for road warriors on both
+    # 192.168.0.254 and 10.16.0.1. Do not DROP 1194 here — GeoIP still
+    # applies to everything else. Site-to-site WG/IKE stay peer-locked.
+    ipt("-i %s -p udp --dport 1194 -j ACCEPT" % wan)
+    ipt("-i %s -p tcp --dport 1194 -j ACCEPT" % wan)
 
     # 5. IKE / NAT-T / WireGuard only from known site-to-site peers
     peers = _s2s_peer_ips()
