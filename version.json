@@ -1,12 +1,12 @@
 {
-  "version": "1.0.16",
+  "version": "1.0.17",
   "date": "2026-09-12",
   "product": "FGUARD UTC",
   "changelog": [
+    "Fix: deleting a NIC must not wipe VLAN netplan (eth1.10 / eth1.20 stay)",
     "Fix: wg-watchdog must not bounce unused WireGuard when IPSec is the live path",
     "Fix: dns-watchdog must not restart dnsmasq when an external DNS probe fails",
     "Fix: GeoIP must ACCEPT OpenVPN 1194 on WAN (SSH/GUI stay dropped; IKE/WG still peer-locked)",
-    "Fix: web filter DoH/QUIC only on LAN→WAN, not tun0 / site-to-site, and do not restart dnsmasq on boot",
-    "Fix: DHCP relay to remote AD (VLAN iface, IPSec routes not stolen by WireGuard, dnsmasq must stay up)"
+    "Fix: web filter DoH/QUIC only on LAN→WAN, not tun0 / site-to-site, and do not restart dnsmasq on boot"
   ]
 }

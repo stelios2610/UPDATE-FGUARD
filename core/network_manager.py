@@ -78,34 +78,72 @@ def write_network_config(ifaces):
 
 
 def _write_netplan(ifaces):
-    config = {"network": {"version": 2, "ethernets": {}}}
-    for iface in ifaces:
+    """Write 50-aegisguard.yaml. Always keep VLANs; never put a default
+    route on LAN. Saving/deleting a NIC must not wipe eth1.10 / eth1.20."""
+    wan_if = database.get_setting("wan_interface") or "ens1"
+    vlans = [v for v in database.get_vlans() if v.get("enabled")]
+    vlan_parents = {v["parent_interface"] for v in vlans}
+    vlan_ips = set()
+    for v in vlans:
+        ip = (v.get("ip_address") or "").split("/")[0].strip()
+        if ip:
+            vlan_ips.add(ip)
+
+    ethernets = {}
+    for iface in ifaces or []:
         if not iface.get("enabled"):
             continue
-        name = iface["name"]
+        name = iface.get("name") or ""
+        if not name or "." in name:
+            continue
+        role = (iface.get("role") or iface.get("type") or "").upper()
+        is_wan = name == wan_if or role == "WAN"
         mode = iface.get("ip_mode", "dhcp")
         entry = {}
-        if mode == "dhcp":
+        if is_wan or mode == "dhcp":
             entry["dhcp4"] = True
-        elif mode == "static":
-            ip = iface.get("ip_address", "")
-            nm = iface.get("netmask", "255.255.255.0")
-            gw = iface.get("gateway", "")
-            if ip:
-                prefix = _netmask_to_prefix(nm)
-                entry["dhcp4"] = False
-                entry["addresses"] = [f"{ip}/{prefix}"]
-                if gw:
-                    entry["routes"] = [{"to": "0.0.0.0/0", "via": gw}]
+        else:
+            entry["dhcp4"] = False
+            ip = (iface.get("ip_address") or "").split("/")[0].strip()
+            # VLAN parent is untagged trunk — do not park 192.168.0.254 on eth1
+            if name in vlan_parents:
+                pass
+            elif ip and ip not in vlan_ips:
+                nm = iface.get("netmask", "255.255.255.0")
+                entry["addresses"] = [f"{ip}/{_netmask_to_prefix(nm)}"]
+            if name not in (wan_if,) and not entry.get("addresses"):
+                entry["optional"] = True
         if iface.get("mtu", 1500) != 1500:
             entry["mtu"] = iface["mtu"]
-        config["network"]["ethernets"][name] = entry
+        ethernets[name] = entry
+
+    if wan_if not in ethernets:
+        ethernets[wan_if] = {"dhcp4": True}
+    for p in vlan_parents:
+        if p not in ethernets:
+            ethernets[p] = {"dhcp4": False}
+
+    config = {"network": {"version": 2, "ethernets": ethernets}}
+    if vlans:
+        vmap = {}
+        for v in vlans:
+            parent = v["parent_interface"]
+            vid = v["vlan_id"]
+            key = f"{parent}.{vid}"
+            ip = (v.get("ip_address") or "").strip()
+            prefix = _netmask_to_prefix(v.get("netmask", "255.255.255.0"))
+            vent = {"id": int(vid), "link": parent, "dhcp4": False}
+            if ip:
+                vent["addresses"] = [ip if "/" in ip else f"{ip}/{prefix}"]
+            vmap[key] = vent
+        config["network"]["vlans"] = vmap
 
     path = "/etc/netplan/50-aegisguard.yaml"
     try:
         import yaml
         with open(path, "w") as f:
-            yaml.dump(config, f, default_flow_style=False)
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        os.chmod(path, 0o600)
         run(["netplan", "apply"])
         return True, "Netplan config applied"
     except ImportError:
@@ -878,45 +916,8 @@ def apply_vlans():
 
 
 def _write_vlan_netplan(vlans, wan_if):
-    netplan_dir = "/etc/netplan"
-    if not os.path.isdir(netplan_dir):
-        return
-
-    lan_if = database.get_setting("lan_interface") or "eth1"
-    lines = ["network:", "  version: 2", "  ethernets:"]
-    lines += [f"    {wan_if}:", "      dhcp4: true"]
-    lines += [f"    {lan_if}:", "      dhcp4: false",
-              f"      addresses:", f"        - 10.0.0.1/24"]
-
-    # Collect unique parent interfaces used by VLANs
-    parents = set(v["parent_interface"] for v in vlans if v.get("enabled"))
-    for p in parents:
-        if p not in (wan_if, lan_if):
-            lines += [f"    {p}:", "      dhcp4: false"]
-
-    if vlans:
-        lines += ["  vlans:"]
-        for v in vlans:
-            if not v.get("enabled"):
-                continue
-            parent = v["parent_interface"]
-            vid = v["vlan_id"]
-            iface = f"{parent}.{vid}"
-            ip = v.get("ip_address", "").strip()
-            prefix = _netmask_to_prefix(v.get("netmask", "255.255.255.0"))
-            lines += [f"    {iface}:", f"      id: {vid}", f"      link: {parent}"]
-            if ip:
-                lines += ["      dhcp4: false", "      addresses:",
-                          f"        - {ip}/{prefix}"]
-            else:
-                lines += ["      dhcp4: false"]
-
-    content = "\n".join(lines) + "\n"
-    path = os.path.join(netplan_dir, "50-aegisguard.yaml")
-    with open(path, "w") as f:
-        f.write(content)
-    os.chmod(path, 0o600)
-    run(["netplan", "apply"])
+    """Same writer as interface save — must not overwrite VLANs or WAN."""
+    _write_netplan(database.get_interfaces())
 
 
 def _write_vlan_dnsmasq(vlans):
