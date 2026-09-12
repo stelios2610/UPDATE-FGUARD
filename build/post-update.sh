@@ -56,3 +56,16 @@ if [[ -f "${BASE_DIR}/build/wg-watchdog.sh" ]]; then
     systemctl enable wg-watchdog.timer  2>/dev/null || true
     systemctl restart wg-watchdog.timer 2>/dev/null || true
 fi
+
+# ── DNS watchdog: patch VLAN ifaces, never restart dnsmasq on google probe ───
+# Added in v1.0.16
+if [[ -f "${BASE_DIR}/build/dns-watchdog.sh" ]]; then
+    install -m 755 "${BASE_DIR}/build/dns-watchdog.sh" /usr/local/bin/dns-watchdog.sh
+    if [[ -f "${BASE_DIR}/build/dns-watchdog.service" ]]; then
+        cp "${BASE_DIR}/build/dns-watchdog.service" /etc/systemd/system/dns-watchdog.service
+        cp "${BASE_DIR}/build/dns-watchdog.timer"   /etc/systemd/system/dns-watchdog.timer
+        systemctl daemon-reload
+        systemctl enable dns-watchdog.timer 2>/dev/null || true
+        systemctl restart dns-watchdog.timer 2>/dev/null || true
+    fi
+fi

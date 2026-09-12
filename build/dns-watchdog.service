@@ -1,0 +1,7 @@
+[Unit]
+Description=DNS Watchdog - keep VLAN ifaces in dnsmasq, do not bounce on probe fail
+After=dnsmasq.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/dns-watchdog.sh

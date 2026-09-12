@@ -1,0 +1,10 @@
+[Unit]
+Description=DNS Watchdog Timer
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

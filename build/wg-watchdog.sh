@@ -50,18 +50,23 @@ for conf in "$CONF_DIR"/wg*.conf; do
         fi
     done < "$conf"
 
-    # --- Restart interface if all peers have stale handshakes ---
+    # Restart only if we *had* a handshake and it went stale.
+    # ts=0 means never connected (IPSec is often the live path) — bouncing
+    # wg-quick would reinstall stolen LAN routes and spam logs.
     now=$(date +%s)
-    total=0; stale=0
+    total=0; stale=0; ever=0
     while read -r _ ts; do
         total=$((total + 1))
-        if [[ "$ts" == "0" ]] || [[ $(( now - ts )) -gt $MAX_HANDSHAKE_AGE ]]; then
-            stale=$((stale + 1))
+        if [[ "$ts" != "0" ]]; then
+            ever=$((ever + 1))
+            if [[ $(( now - ts )) -gt $MAX_HANDSHAKE_AGE ]]; then
+                stale=$((stale + 1))
+            fi
         fi
     done < <(wg show "$iface" latest-handshakes 2>/dev/null)
 
-    if [[ $total -gt 0 && $stale -eq $total ]]; then
-        logger -t wg-watchdog "$iface: all $total peer(s) stale (>${MAX_HANDSHAKE_AGE}s), restarting"
+    if [[ $ever -gt 0 && $stale -eq $ever ]]; then
+        logger -t wg-watchdog "$iface: all $ever connected peer(s) stale (>${MAX_HANDSHAKE_AGE}s), restarting"
         systemctl restart "wg-quick@$iface"
     fi
 done
