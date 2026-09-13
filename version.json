@@ -1,12 +1,12 @@
 {
-  "version": "1.0.17",
-  "date": "2026-09-12",
+  "version": "1.0.18",
+  "date": "2026-09-13",
   "product": "FGUARD UTC",
   "changelog": [
+    "Add: FortiGate-style configuration backup and restore (download/upload .conf for a replacement unit)",
+    "Add: File Filter tab (type/AV inspect on submitted files)",
     "Fix: deleting a NIC must not wipe VLAN netplan (eth1.10 / eth1.20 stay)",
     "Fix: wg-watchdog must not bounce unused WireGuard when IPSec is the live path",
-    "Fix: dns-watchdog must not restart dnsmasq when an external DNS probe fails",
-    "Fix: GeoIP must ACCEPT OpenVPN 1194 on WAN (SSH/GUI stay dropped; IKE/WG still peer-locked)",
-    "Fix: web filter DoH/QUIC only on LAN→WAN, not tun0 / site-to-site, and do not restart dnsmasq on boot"
+    "Fix: dns-watchdog must not restart dnsmasq when an external DNS probe fails"
   ]
 }

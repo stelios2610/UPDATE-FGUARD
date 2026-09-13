@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Settings{% endblock %}
 {% block page_title %}Settings{% endblock %}
-{% set active = "settings" %}
+{% set active = active | default('settings') %}
 
 {% block content %}
 
@@ -19,6 +19,7 @@
   <button class="btn btn-secondary" id="tab-btn-vpnpaths" onclick="switchTab('vpnpaths')" style="border-radius:0;border:none;border-right:1px solid var(--border)">VPN Paths</button>
   <button class="btn btn-secondary" id="tab-btn-email" onclick="switchTab('email')" style="border-radius:0;border:none;border-right:1px solid var(--border)">Email Alerts</button>
   <button class="btn btn-secondary" id="tab-btn-syslog" onclick="switchTab('syslog')" style="border-radius:0;border:none;border-right:1px solid var(--border)">Syslog</button>
+  <button class="btn btn-secondary" id="tab-btn-backup" onclick="switchTab('backup')" style="border-radius:0;border:none;border-right:1px solid var(--border)">Backup &amp; Restore</button>
   <button class="btn btn-secondary" id="tab-btn-danger" onclick="switchTab('danger')" style="border-radius:0;border:none;border-right:1px solid var(--border)">Danger Zone</button>
   <button class="btn btn-secondary" id="tab-btn-about" onclick="switchTab('about')" style="border-radius:0;border:none;border-right:1px solid var(--border)">About</button>
   <button class="btn btn-secondary" id="tab-btn-license" onclick="switchTab('license')" style="border-radius:0;border:none">🔑 License</button>
@@ -398,6 +399,48 @@
   </div>
 </div>
 
+<!-- ══════════════════ BACKUP / RESTORE TAB ══════════════════ -->
+<div id="tab-backup" style="display:none">
+  <div class="alert alert-info" style="margin-bottom:16px;font-size:12px">
+    Like FortiGate: download a configuration file, then upload it on a replacement unit.
+    Includes rules, network, VPN keys, certificates, users and settings.
+    Does not include traffic logs, DHCP leases, GUI sessions, or the device license (license is bound to this appliance).
+    Interface names (eth1, ens1) must exist on the new hardware.
+  </div>
+  <div class="grid grid-2">
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Backup Configuration</div>
+          <div class="card-sub">Download a .conf file for this firewall</div>
+        </div>
+      </div>
+      <p class="text-muted" style="font-size:13px;line-height:1.6">
+        Save this file offline. When you replace the box, restore it from the same page on the new FGUARD UTC.
+      </p>
+      <button class="btn btn-primary" onclick="downloadBackup()">Download configuration</button>
+    </div>
+    <div class="card" style="border-color:var(--warning)">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Restore Configuration</div>
+          <div class="card-sub">Overwrite this unit with a backup file</div>
+        </div>
+      </div>
+      <p class="text-muted" style="font-size:13px;line-height:1.6">
+        This replaces the current configuration. A copy is kept as <span class="font-mono">firewall.db.pre-restore</span>.
+        Restart the FGUARD service after restore.
+      </p>
+      <div class="form-group">
+        <label class="form-label">Configuration file</label>
+        <input type="file" class="form-control" id="restore-file" accept=".conf,.zip,.agbak">
+      </div>
+      <button class="btn btn-danger" onclick="restoreBackup()">Restore</button>
+      <div id="restore-result" style="margin-top:12px;display:none"></div>
+    </div>
+  </div>
+</div>
+
 <!-- ══════════════════ DANGER ZONE TAB ══════════════════ -->
 <div id="tab-danger" style="display:none">
   <div class="card" style="border-color:var(--danger)">
@@ -651,7 +694,7 @@
 
 {% block extra_js %}
 <script>
-const SETTINGS_TABS = ['general','firewall','network','vpnpaths','email','syslog','danger','about','license'];
+const SETTINGS_TABS = ['general','firewall','network','vpnpaths','email','syslog','backup','danger','about','license'];
 function switchTab(name) {
   SETTINGS_TABS.forEach(t => {
     document.getElementById('tab-' + t).style.display = t === name ? '' : 'none';
@@ -662,7 +705,38 @@ function switchTab(name) {
     }
   });
 }
-switchTab('general');
+(function () {
+  const p = new URLSearchParams(location.search);
+  const hashMap = {logging:'syslog', email:'email', license:'license'};
+  const raw = p.get('tab') || hashMap[(location.hash || '').replace('#','')] || 'general';
+  switchTab(SETTINGS_TABS.indexOf(raw) >= 0 ? raw : 'general');
+})();
+
+function downloadBackup() {
+  window.location.href = '/api/settings/backup';
+}
+
+async function restoreBackup() {
+  const inp = document.getElementById('restore-file');
+  if (!inp.files.length) { toast('Select a configuration file', 'error'); return; }
+  if (!confirm2('Restore will overwrite this firewall configuration. Continue?')) return;
+  if (!confirm2('Are you sure? VPN and network settings will be replaced. Restart FGUARD afterwards.')) return;
+  const resultEl = document.getElementById('restore-result');
+  resultEl.style.display = '';
+  resultEl.innerHTML = '<div class="alert alert-info">Restoring configuration...</div>';
+  const fd = new FormData();
+  fd.append('file', inp.files[0]);
+  try {
+    const res = await fetch('/api/settings/restore', { method: 'POST', body: fd });
+    const r = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(r.detail || res.statusText);
+    resultEl.innerHTML = '<div class="alert alert-success">' + (r.message || 'Configuration restored') + '</div>';
+    toast('Configuration restored', 'success');
+  } catch (e) {
+    resultEl.innerHTML = '<div class="alert alert-danger">Restore failed: ' + e.message + '</div>';
+    toast('Restore error: ' + e.message, 'error');
+  }
+}
 
 // ── Password strength meter ──
 document.getElementById('pw-new').addEventListener('input', function() {

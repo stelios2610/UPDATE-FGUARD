@@ -118,6 +118,9 @@
       <a href="/security?tab=dlp" class="nav-item {% if active=='security-dlp' %}active{% endif %}">
         <span class="nav-dot"></span> Data Loss Prevention
       </a>
+      <a href="/security?tab=filefilter" class="nav-item {% if active=='security-ff' %}active{% endif %}">
+        <span class="nav-dot"></span> File Filter
+      </a>
       <a href="/discovery" class="nav-item {% if active=='discovery' %}active{% endif %}">
         <span class="nav-dot"></span> Network Discovery
       </a>
@@ -185,13 +188,16 @@
   </div>
 
   <!-- ── SYSTEM ───────────────────────────────────────────────────────────── -->
-  <div class="nav-group {% if active in ['settings','settings-log','settings-email','updates'] %}open{% endif %}" id="grp-system">
+  <div class="nav-group {% if active in ['settings','settings-backup','settings-log','settings-email','updates'] %}open{% endif %}" id="grp-system">
     <div class="nav-group-header" onclick="toggleGroup('grp-system')">
       <span class="nav-group-icon">⚙️</span>
       <span>System</span>
       <span class="nav-group-arrow">▶</span>
     </div>
     <div class="nav-group-items">
+      <a href="/settings?tab=backup" class="nav-item {% if active=='settings-backup' %}active{% endif %}">
+        <span class="nav-dot"></span> Backup &amp; Restore
+      </a>
       <a href="/settings" class="nav-item {% if active=='settings' %}active{% endif %}">
         <span class="nav-dot"></span> System Settings
       </a>

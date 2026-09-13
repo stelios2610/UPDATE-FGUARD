@@ -13,7 +13,7 @@ def _load_version():
 APP_VERSION = _load_version()
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -28,7 +28,7 @@ from db import database
 from core import (monitor, ips, rules_engine, web_filter, app_control,
                   vpn_manager, network_manager, gateway_av, reputation,
                   spam_filter, network_discovery, dlp, vpn_keygen, mfa,
-                  ssl_vpn, bov_manager)
+                  ssl_vpn, bov_manager, file_filter)
 from core.platform import IS_LINUX, is_root, run
 from core import multiwan_manager, ha_manager
 from core.ipsec_manager import (create_ipsec_tunnel, remove_ipsec_tunnel,
@@ -36,8 +36,10 @@ from core.ipsec_manager import (create_ipsec_tunnel, remove_ipsec_tunnel,
 from core.mfa import hash_password
 from core import license_manager
 from core import updater
+from core import config_backup
 
 database.initialize()
+file_filter.seed_defaults()
 ensure_default_admin()
 ips.start()
 reputation.init()
@@ -432,7 +434,10 @@ async def security_page(request: Request):
     return _ctx(request, template="security.html",
                 bl_stats=bl_stats, ddos=ddos, av_stats=av_stats,
                 av_available=av_available, dlp_patterns=dlp_patterns,
-                blocked_countries=blocked_countries)
+                blocked_countries=blocked_countries,
+                file_filter_enabled=database.get_setting("file_filter_enabled", "1") == "1",
+                file_filter_rules=database.get_file_filter_rules(),
+                file_filter_history=database.get_file_filter_submissions(20))
 
 @app.get("/discovery", response_class=HTMLResponse)
 async def discovery_page(request: Request):
@@ -459,12 +464,14 @@ async def ha_page(request: Request):
                 ha=database.get_ha_config())
 
 @app.get("/settings", response_class=HTMLResponse)
-async def settings_page(request: Request):
+async def settings_page(request: Request, tab: Optional[str] = None):
     settings = database.get_all_settings()
     wf_status = rules_engine.get_firewall_status()
     log_servers = database.get_log_servers()
+    active = "settings-backup" if tab == "backup" else "settings"
     return _ctx(request, template="settings.html",
-                settings=settings, wf_status=wf_status, log_servers=log_servers)
+                settings=settings, wf_status=wf_status, log_servers=log_servers,
+                active=active)
 
 @app.get("/proxies", response_class=HTMLResponse)
 async def proxies_page(request: Request):
@@ -1276,6 +1283,72 @@ async def api_del_dlp_pattern(pid: int):
     database.delete_dlp_pattern(pid)
     return {"status": "ok"}
 
+@app.get("/api/security/filefilter")
+async def api_filefilter_get():
+    return {
+        "enabled": database.get_setting("file_filter_enabled", "1") == "1",
+        "rules": database.get_file_filter_rules(),
+        "types": file_filter.KNOWN_TYPES,
+        "history": database.get_file_filter_submissions(50),
+        "max_mb": file_filter.MAX_BYTES // (1024 * 1024),
+    }
+
+@app.post("/api/security/filefilter/enable")
+async def api_filefilter_enable(request: Request):
+    data = await request.json()
+    on = 1 if data.get("enabled") else 0
+    database.set_setting("file_filter_enabled", str(on))
+    database.add_log("INFO", rule_name="File Filter",
+                     details=f"File Filter {'enabled' if on else 'disabled'}")
+    return {"status": "ok", "enabled": bool(on)}
+
+@app.post("/api/security/filefilter/rules")
+async def api_filefilter_add_rule(request: Request):
+    data = await request.json()
+    name = (data.get("name") or "").strip()
+    types = (data.get("file_types") or "").strip()
+    if not name or not types:
+        raise HTTPException(400, "Name and file types are required")
+    direction = (data.get("direction") or "upload").lower()
+    if direction not in ("upload", "download", "both"):
+        direction = "upload"
+    action = (data.get("action") or "block").lower()
+    if action not in ("block", "log"):
+        action = "block"
+    database.add_file_filter_rule(
+        name=name,
+        direction=direction,
+        action=action,
+        file_types=types,
+        protocols=(data.get("protocols") or "HTTP,HTTPS,FTP").strip(),
+        enabled=1 if data.get("enabled", True) else 0,
+    )
+    return {"status": "ok"}
+
+@app.post("/api/security/filefilter/rules/{rid}/toggle")
+async def api_filefilter_toggle(rid: int):
+    rules = database.get_file_filter_rules()
+    row = next((r for r in rules if r["id"] == rid), None)
+    if not row:
+        raise HTTPException(404)
+    database.update_file_filter_rule(rid, enabled=0 if row["enabled"] else 1)
+    return {"status": "ok"}
+
+@app.delete("/api/security/filefilter/rules/{rid}")
+async def api_filefilter_del(rid: int):
+    database.delete_file_filter_rule(rid)
+    return {"status": "ok"}
+
+@app.post("/api/security/filefilter/submit")
+async def api_filefilter_submit(file: UploadFile = File(...),
+                                direction: str = Form("upload")):
+    data = await file.read()
+    if len(data) > file_filter.MAX_BYTES:
+        raise HTTPException(413, f"File larger than {file_filter.MAX_BYTES // (1024 * 1024)} MB")
+    if direction not in ("upload", "download"):
+        direction = "upload"
+    return file_filter.inspect(file.filename, data, direction)
+
 @app.post("/api/security/spam/check")
 async def api_spam_check(request: Request):
     data = await request.json()
@@ -1578,6 +1651,26 @@ async def api_factory_reset():
     database.clear_logs()
     rules_engine.flush_all_rules()
     return {"status": "ok", "message": "Factory reset complete. Please reboot."}
+
+@app.get("/api/settings/backup")
+async def api_settings_backup():
+    name, blob = config_backup.build_backup()
+    database.add_log("INFO", rule_name="Config Backup", details=f"Downloaded {name}")
+    return Response(
+        content=blob,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+@app.post("/api/settings/restore")
+async def api_settings_restore(file: UploadFile = File(...)):
+    data = await file.read()
+    try:
+        return config_backup.restore_backup(data)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 # Firewall status
 @app.get("/api/settings/fw-status")

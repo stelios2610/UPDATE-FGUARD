@@ -582,6 +582,42 @@ def initialize():
         )
     """)
 
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS file_filter_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            direction TEXT NOT NULL DEFAULT 'upload',
+            action TEXT NOT NULL DEFAULT 'block',
+            file_types TEXT NOT NULL DEFAULT '',
+            protocols TEXT NOT NULL DEFAULT 'HTTP,HTTPS,FTP',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS file_filter_submissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            size INTEGER NOT NULL DEFAULT 0,
+            detected_type TEXT DEFAULT '',
+            action TEXT NOT NULL DEFAULT 'allow',
+            details TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+    """)
+    if not c.execute("SELECT 1 FROM file_filter_rules LIMIT 1").fetchone():
+        now = datetime.now().isoformat()
+        c.execute(
+            "INSERT INTO file_filter_rules (name, direction, action, file_types, protocols, enabled, created_at) VALUES (?,?,?,?,?,?,?)",
+            ("Block Windows executables (upload)", "upload", "block",
+             "exe,dll,sys,scr,com,bat,cmd,msi,ps1", "HTTP,HTTPS,FTP", 1, now),
+        )
+        c.execute(
+            "INSERT INTO file_filter_rules (name, direction, action, file_types, protocols, enabled, created_at) VALUES (?,?,?,?,?,?,?)",
+            ("Block script droppers (upload)", "upload", "block",
+             "js,vbs,wsf,hta,jar", "HTTP,HTTPS,FTP", 1, now),
+        )
+
     # ── VLAN schema migrations ────────────────────────────────────────────────
     for _col, _default in [("dhcp_gateway", "''"), ("dhcp_dns1", "''"), ("dhcp_dns2", "''")]:
         try:
@@ -630,6 +666,7 @@ def initialize():
         ("vpn_openvpn_path", "/usr/sbin/openvpn"),
         ("vpn_wireguard_path", "/usr/bin/wg-quick"),
         ("setup_complete", "0"),
+        ("file_filter_enabled", "1"),
     ]
     for key, value in defaults:
         c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
@@ -1935,3 +1972,75 @@ def delete_dlp_pattern(pattern_id):
     conn.execute("DELETE FROM dlp_patterns WHERE id = ?", (pattern_id,))
     conn.commit()
     conn.close()
+
+
+# ─── File Filter (FortiGate-style) ────────────────────────────────────────────
+
+def get_file_filter_rules():
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM file_filter_rules ORDER BY id").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def add_file_filter_rule(name, direction="upload", action="block",
+                         file_types="", protocols="HTTP,HTTPS,FTP", enabled=1):
+    conn = get_connection()
+    conn.execute(
+        """INSERT INTO file_filter_rules
+           (name, direction, action, file_types, protocols, enabled, created_at)
+           VALUES (?,?,?,?,?,?,?)""",
+        (name, direction, action, file_types, protocols, enabled, datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_file_filter_rule(rule_id, **kwargs):
+    allowed = {"name", "direction", "action", "file_types", "protocols", "enabled"}
+    fields = {k: v for k, v in kwargs.items() if k in allowed}
+    if not fields:
+        return
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    conn = get_connection()
+    conn.execute(
+        f"UPDATE file_filter_rules SET {sets} WHERE id = ?",
+        list(fields.values()) + [rule_id],
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_file_filter_rule(rule_id):
+    conn = get_connection()
+    conn.execute("DELETE FROM file_filter_rules WHERE id = ?", (rule_id,))
+    conn.commit()
+    conn.close()
+
+
+def add_file_filter_submission(filename, size, detected_type, action, details=""):
+    conn = get_connection()
+    conn.execute(
+        """INSERT INTO file_filter_submissions
+           (filename, size, detected_type, action, details, created_at)
+           VALUES (?,?,?,?,?,?)""",
+        (filename, size, detected_type, action, details, datetime.now().isoformat()),
+    )
+    n = conn.execute("SELECT COUNT(*) FROM file_filter_submissions").fetchone()[0]
+    if n > 100:
+        conn.execute(
+            "DELETE FROM file_filter_submissions WHERE id IN (SELECT id FROM file_filter_submissions ORDER BY id ASC LIMIT ?)",
+            (n - 100,),
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_file_filter_submissions(limit=50):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM file_filter_submissions ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]

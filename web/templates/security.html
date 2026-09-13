@@ -11,7 +11,8 @@
   <button class="btn btn-secondary" id="tab-btn-ddos" onclick="switchTab('ddos')" style="border-radius:0;border:none;border-right:1px solid var(--border)">Anti-DDoS</button>
   <button class="btn btn-secondary" id="tab-btn-geoip" onclick="switchTab('geoip')" style="border-radius:0;border:none;border-right:1px solid var(--border)">GeoIP Blocking</button>
   <button class="btn btn-secondary" id="tab-btn-av" onclick="switchTab('av')" style="border-radius:0;border:none;border-right:1px solid var(--border)">Gateway AntiVirus</button>
-  <button class="btn btn-secondary" id="tab-btn-dlp" onclick="switchTab('dlp')" style="border-radius:0;border:none">DLP</button>
+  <button class="btn btn-secondary" id="tab-btn-dlp" onclick="switchTab('dlp')" style="border-radius:0;border:none;border-right:1px solid var(--border)">DLP</button>
+  <button class="btn btn-secondary" id="tab-btn-filefilter" onclick="switchTab('filefilter')" style="border-radius:0;border:none">File Filter</button>
 </div>
 
 <!-- ══════════════════ REPUTATION / RED TAB ══════════════════ -->
@@ -362,6 +363,125 @@
   </div>
 </div>
 
+<!-- ══════════════════ FILE FILTER TAB ══════════════════ -->
+<div id="tab-filefilter" style="display:none">
+  <div class="alert alert-info" style="margin-bottom:16px;font-size:12px">
+    FortiGate-style File Filter: block or log files by type (extension + magic bytes) for upload/download.
+    Submit File runs the same check as FortiGate file upload (type + ClamAV + DLP on text).
+    Inline HTTPS body inspection needs SSL inspection / proxy — this policy is enforced on submitted files and is ready for proxy integration.
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-header">
+      <div>
+        <div class="card-title">File Filter</div>
+        <div class="card-sub">Policies for HTTP / HTTPS / FTP file types</div>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-right:12px">
+        <input type="checkbox" id="ff-enabled" {{ 'checked' if file_filter_enabled }} onchange="toggleFileFilter(this.checked)">
+        Enabled
+      </label>
+      <button class="btn btn-primary" onclick="openModal('add-ff-modal')">+ Add Rule</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Direction</th>
+            <th>Action</th>
+            <th>File types</th>
+            <th>Protocols</th>
+            <th>Enabled</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="ff-tbody">
+          {% for r in file_filter_rules | default([]) %}
+          <tr id="ff-row-{{ r.id }}">
+            <td>{{ r.name }}</td>
+            <td><span class="badge badge-info">{{ r.direction }}</span></td>
+            <td>
+              {% if r.action == 'block' %}
+              <span class="badge badge-warn">BLOCK</span>
+              {% else %}
+              <span class="badge badge-info">LOG</span>
+              {% endif %}
+            </td>
+            <td class="font-mono" style="font-size:11px">{{ r.file_types }}</td>
+            <td class="text-muted" style="font-size:11px">{{ r.protocols }}</td>
+            <td>
+              <label style="cursor:pointer">
+                <input type="checkbox" {{ 'checked' if r.enabled }} onchange="toggleFF({{ r.id }})">
+              </label>
+            </td>
+            <td>
+              <button class="btn btn-danger btn-sm" onclick="deleteFF({{ r.id }})">✕</button>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="7" class="text-muted" style="text-align:center;padding:20px">No File Filter rules yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="grid grid-2">
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Submit File</div>
+          <div class="card-sub">Upload a file to inspect (max 32 MB)</div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Direction</label>
+        <select class="form-control" id="ff-direction">
+          <option value="upload" selected>Upload</option>
+          <option value="download">Download</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">File</label>
+        <input type="file" class="form-control" id="ff-file">
+      </div>
+      <button class="btn btn-primary" onclick="submitFFFile()">Inspect File</button>
+      <div id="ff-scan-result" style="margin-top:16px;display:none"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">Submission history</div>
+        <div class="card-sub">Last inspections</div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Time</th><th>File</th><th>Type</th><th>Result</th></tr></thead>
+          <tbody id="ff-history">
+            {% for h in file_filter_history | default([]) %}
+            <tr>
+              <td class="text-muted" style="font-size:11px">{{ h.created_at }}</td>
+              <td class="font-mono" style="font-size:11px">{{ h.filename }}</td>
+              <td>{{ h.detected_type }}</td>
+              <td>
+                {% if h.action == 'block' %}
+                <span class="badge badge-warn">BLOCK</span>
+                {% else %}
+                <span class="badge badge-info">ALLOW</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4" class="text-muted" style="text-align:center;padding:16px">No submissions yet.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ══════════════════ MODALS ══════════════════ -->
 
 <!-- Add DLP Pattern Modal -->
@@ -403,12 +523,56 @@
   </div>
 </div>
 
+<!-- Add File Filter Rule Modal -->
+<div class="modal-overlay" id="add-ff-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Add File Filter Rule</span>
+      <button class="modal-close" onclick="closeModal('add-ff-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Name *</label>
+        <input class="form-control" id="ff-name" placeholder="e.g. Block executables">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Direction</label>
+        <select class="form-control" id="ff-rule-direction">
+          <option value="upload" selected>Upload</option>
+          <option value="download">Download</option>
+          <option value="both">Both</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Action</label>
+        <select class="form-control" id="ff-action">
+          <option value="block" selected>Block</option>
+          <option value="log">Log only</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">File types *</label>
+        <input class="form-control font-mono" id="ff-types" placeholder="exe,dll,zip,pdf">
+        <small class="text-muted">Comma-separated extensions. Magic bytes also match (MZ→exe, PK→zip, %PDF→pdf).</small>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Protocols</label>
+        <input class="form-control" id="ff-protocols" value="HTTP,HTTPS,FTP">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('add-ff-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveFF()">Save Rule</button>
+    </div>
+  </div>
+</div>
+
 {% endblock %}
 
 {% block extra_js %}
 <script>
 // ── Tab switching ──
-const TABS = ['reputation','ddos','geoip','av','dlp'];
+const TABS = ['reputation','ddos','geoip','av','dlp','filefilter'];
 function switchTab(name) {
   TABS.forEach(t => {
     document.getElementById('tab-' + t).style.display = t === name ? '' : 'none';
@@ -419,7 +583,13 @@ function switchTab(name) {
     }
   });
 }
-switchTab('reputation');
+(function () {
+  const p = new URLSearchParams(location.search);
+  const tabMap = {rep:'reputation', av:'av', ddos:'ddos', geo:'geoip', geoip:'geoip', dlp:'dlp', filefilter:'filefilter', file:'filefilter'};
+  const raw = p.get('tab');
+  const name = tabMap[raw] || (TABS.indexOf(raw) >= 0 ? raw : 'reputation');
+  switchTab(name);
+})();
 
 // ── GeoIP helpers ──
 function filterGeoIP(q) {
@@ -633,8 +803,105 @@ async function deleteDLP(id) {
   } catch (e) { toast('Error: ' + e.message, 'error'); }
 }
 
+function escHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+async function toggleFileFilter(on) {
+  try {
+    await POST('/api/security/filefilter/enable', { enabled: !!on });
+    toast(on ? 'File Filter enabled' : 'File Filter disabled', 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function saveFF() {
+  const name = document.getElementById('ff-name').value.trim();
+  const types = document.getElementById('ff-types').value.trim();
+  if (!name || !types) { toast('Name and file types are required', 'error'); return; }
+  try {
+    await POST('/api/security/filefilter/rules', {
+      name,
+      file_types: types,
+      direction: document.getElementById('ff-rule-direction').value,
+      action: document.getElementById('ff-action').value,
+      protocols: document.getElementById('ff-protocols').value.trim() || 'HTTP,HTTPS,FTP',
+      enabled: true,
+    });
+    closeModal('add-ff-modal');
+    toast('File Filter rule saved', 'success');
+    location.reload();
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function toggleFF(id) {
+  try {
+    await POST(`/api/security/filefilter/rules/${id}/toggle`);
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function deleteFF(id) {
+  if (!confirm2('Delete this File Filter rule?')) return;
+  try {
+    await DELETE(`/api/security/filefilter/rules/${id}`);
+    document.getElementById(`ff-row-${id}`)?.remove();
+    toast('Rule deleted', 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function submitFFFile() {
+  const fileInput = document.getElementById('ff-file');
+  if (!fileInput.files.length) { toast('Select a file', 'error'); return; }
+  const file = fileInput.files[0];
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('direction', document.getElementById('ff-direction').value);
+  const resultEl = document.getElementById('ff-scan-result');
+  resultEl.style.display = '';
+  resultEl.innerHTML = '<div class="alert alert-info">Inspecting ' + escHtml(file.name) + '...</div>';
+  try {
+    const res = await fetch('/api/security/filefilter/submit', { method: 'POST', body: formData });
+    const r = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(r.detail || res.statusText);
+    const reasons = (r.reasons || []).map(escHtml).join('<br>') || 'No matching policy';
+    const cls = r.blocked ? 'alert-danger' : 'alert-success';
+    const title = r.blocked ? 'BLOCKED' : 'ALLOWED';
+    resultEl.innerHTML =
+      `<div class="alert ${cls}"><strong>${title}</strong> — ${escHtml(r.filename)}` +
+      `<div style="margin-top:8px;font-size:12px">Type: ${escHtml(r.detected_type)} · Size: ${r.size} bytes` +
+      (r.rule ? ` · Rule: ${escHtml(r.rule)}` : '') +
+      (r.av_clean === false ? ` · AV: ${escHtml(r.av_threat)}` : '') +
+      `</div><div style="margin-top:6px;font-size:12px">${reasons}</div></div>`;
+    await refreshFFHistory();
+  } catch (e) {
+    resultEl.innerHTML = `<div class="alert alert-danger">Inspect error: ${escHtml(e.message)}</div>`;
+  }
+}
+
+async function refreshFFHistory() {
+  try {
+    const d = await GET('/api/security/filefilter');
+    const tb = document.getElementById('ff-history');
+    if (!tb) return;
+    const hist = d.history || [];
+    if (!hist.length) {
+      tb.innerHTML = '<tr><td colspan="4" class="text-muted" style="text-align:center;padding:16px">No submissions yet.</td></tr>';
+      return;
+    }
+    tb.innerHTML = hist.slice(0, 20).map(h =>
+      `<tr>
+        <td class="text-muted" style="font-size:11px">${escHtml(h.created_at)}</td>
+        <td class="font-mono" style="font-size:11px">${escHtml(h.filename)}</td>
+        <td>${escHtml(h.detected_type)}</td>
+        <td>${h.action === 'block' ? '<span class="badge badge-warn">BLOCK</span>' : '<span class="badge badge-info">ALLOW</span>'}</td>
+      </tr>`
+    ).join('');
+  } catch (e) { /* keep existing rows */ }
+}
+
 // Close modals on backdrop click
-['add-dlp-modal'].forEach(id => {
+['add-dlp-modal','add-ff-modal'].forEach(id => {
   document.getElementById(id).addEventListener('click', e => {
     if (e.target === document.getElementById(id)) closeModal(id);
   });
