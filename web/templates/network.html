@@ -394,6 +394,47 @@
       </div>
     </div>
   </div>
+
+  <div class="card" style="margin-top:16px">
+    <div class="card-header">
+      <div>
+        <div class="card-title">Local DNS Hosts</div>
+        <div class="card-sub">Names the firewall answers for LAN clients — used when discovery cannot cross site-to-site VPN (e.g. UniFi)</div>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Hostname</th><th>IP Address</th><th>Comment</th><th>Actions</th></tr></thead>
+        <tbody id="dns-hosts-tbody">
+          {% for h in dns_hosts|default([]) %}
+          <tr id="dns-host-row-{{ h.id }}">
+            <td class="font-mono">{{ h.hostname }}</td>
+            <td class="font-mono">{{ h.ip }}</td>
+            <td class="text-muted">{{ h.comment or '—' }}</td>
+            <td><button class="btn btn-danger btn-sm" onclick="deleteDnsHost({{ h.id }})">✕</button></td>
+          </tr>
+          {% else %}
+          <tr id="dns-hosts-empty"><td colspan="4" class="text-muted" style="text-align:center;padding:20px">No local DNS hosts. Add one below.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="form-row" style="padding:16px;gap:12px;align-items:end">
+      <div class="form-group" style="flex:1;margin:0">
+        <label class="form-label">Hostname</label>
+        <input class="form-control font-mono" id="dns-host-name" placeholder="e.g. unifi">
+      </div>
+      <div class="form-group" style="flex:1;margin:0">
+        <label class="form-label">IP Address</label>
+        <input class="form-control font-mono" id="dns-host-ip" placeholder="e.g. 10.16.0.26">
+      </div>
+      <div class="form-group" style="flex:1;margin:0">
+        <label class="form-label">Comment</label>
+        <input class="form-control" id="dns-host-comment" placeholder="e.g. UniFi controller">
+      </div>
+      <button class="btn btn-primary" onclick="addDnsHost()">+ Add</button>
+    </div>
+  </div>
 </div>
 
 <!-- ══════════════════ NAT TAB ══════════════════ -->
@@ -1676,6 +1717,27 @@ async function applyDns() {
   try {
     const r = await POST('/api/dns/apply');
     toast(r.message || 'DNS applied', r.status === 'ok' ? 'success' : 'error');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function addDnsHost() {
+  const hostname = document.getElementById('dns-host-name').value.trim();
+  const ip = document.getElementById('dns-host-ip').value.trim();
+  const comment = document.getElementById('dns-host-comment').value.trim();
+  if (!hostname || !ip) { toast('Hostname and IP are required', 'error'); return; }
+  try {
+    await POST('/api/dns/hosts', { hostname, ip, comment });
+    toast(`${hostname} → ${ip} saved`, 'success');
+    location.href = '/network?tab=dns';
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function deleteDnsHost(id) {
+  if (!confirm2('Remove this local DNS host?')) return;
+  try {
+    await DELETE(`/api/dns/hosts/${id}`);
+    document.getElementById(`dns-host-row-${id}`)?.remove();
+    toast('Host removed', 'success');
   } catch (e) { toast('Error: ' + e.message, 'error'); }
 }
 

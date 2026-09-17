@@ -1,9 +1,9 @@
 {
-  "version": "1.0.22",
-  "date": "2026-09-17",
+  "version": "1.0.23",
+  "date": "2026-09-18",
   "product": "FGUARD",
   "changelog": [
-    "OTA: never run aegisguard and fguard together (both bind :8888; GUI stayed on old code)",
-    "UI: Blocked counts real BLOCK/DROP/THREAT events, not all logs"
+    "Network → DNS: Local DNS Hosts list (hostname → IP) visible and editable in the GUI",
+    "UniFi-style names such as unifi are stored as local DNS hosts so they survive apply/update"
   ]
 }

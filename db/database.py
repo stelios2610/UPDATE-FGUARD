@@ -188,6 +188,16 @@ def initialize():
         )
     """)
 
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS dns_hosts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hostname TEXT NOT NULL UNIQUE,
+            ip TEXT NOT NULL,
+            comment TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+    """)
+
     # ── NAT rules ─────────────────────────────────────────────────────────────
     c.execute("""
         CREATE TABLE IF NOT EXISTS nat_rules (
@@ -687,6 +697,7 @@ def initialize():
     _seed_default_rules()
     _seed_default_app_rules()
     _seed_default_interfaces()
+    _migrate_dns_hosts_from_files()
 
 
 def _seed_default_rules():
@@ -1203,6 +1214,68 @@ def save_dns_settings(**kwargs):
     conn.execute(f"UPDATE dns_settings SET {sets} WHERE id = 1", values)
     conn.commit()
     conn.close()
+
+
+def get_dns_hosts():
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM dns_hosts ORDER BY hostname").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def add_dns_host(hostname, ip, comment=""):
+    hostname = (hostname or "").strip().rstrip(".")
+    ip = (ip or "").strip()
+    if not hostname or not ip:
+        raise ValueError("hostname and ip are required")
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO dns_hosts (hostname, ip, comment, created_at) VALUES (?,?,?,?)",
+        (hostname, ip, (comment or "").strip(), datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_dns_host(host_id):
+    conn = get_connection()
+    conn.execute("DELETE FROM dns_hosts WHERE id = ?", (host_id,))
+    conn.commit()
+    conn.close()
+
+
+def _migrate_dns_hosts_from_files():
+    """Import existing dnsmasq host records into the GUI table once."""
+    import re
+    try:
+        if get_dns_hosts():
+            return
+    except Exception:
+        return
+    found = []
+    for path in (
+        "/etc/dnsmasq.d/fguard-hosts.conf",
+        "/etc/dnsmasq.d/fguard-unifi.conf",
+    ):
+        try:
+            with open(path) as f:
+                text = f.read()
+        except Exception:
+            continue
+        for m in re.finditer(r"^address=/([^/\s]+)/([0-9.]+)\s*$", text, re.M):
+            found.append((m.group(1), m.group(2), "Imported"))
+        for m in re.finditer(r"^host-record=([^,\s]+),([0-9.]+)\s*$", text, re.M):
+            found.append((m.group(1), m.group(2), "Imported"))
+    seen = set()
+    for name, ip, comment in found:
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            add_dns_host(name, ip, comment)
+        except Exception:
+            pass
 
 
 # ─── NAT Rules ────────────────────────────────────────────────────────────────

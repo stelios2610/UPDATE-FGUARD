@@ -349,6 +349,7 @@ def write_dhcp_config():
             with open("/etc/dnsmasq.d/fguard.conf", "a") as f:
                 f.write("\n" + "\n".join(missing_ifaces) + "\n")
 
+        write_dns_hosts(restart=False)
         run(["systemctl", "restart", "dnsmasq"])
         return True, "dnsmasq config applied"
     except Exception as e:
@@ -375,11 +376,57 @@ def get_dhcp_active_leases():
     return leases
 
 
+def write_dns_hosts(restart=True):
+    """Write GUI local DNS hosts to dnsmasq. Does not rewrite fguard.conf."""
+    if not IS_LINUX:
+        return False, "Linux only"
+    hosts = database.get_dns_hosts()
+    lines = [
+        "# FGUARD local DNS hosts — Network → DNS",
+        "# address= wins over forwarded AD zones (e.g. stelios.local)",
+    ]
+    search = (database.get_dns_settings().get("search_domain") or "").strip().strip(".")
+    for h in hosts:
+        name = (h.get("hostname") or "").strip().rstrip(".")
+        ip = (h.get("ip") or "").strip()
+        if not name or not ip:
+            continue
+        if "." in name:
+            lines.append(f"address=/{name}/{ip}")
+        else:
+            lines.append(f"host-record={name},{ip}")
+            if search:
+                lines.append(f"address=/{name}.{search}/{ip}")
+    conf = "\n".join(lines) + "\n"
+    path = "/etc/dnsmasq.d/fguard-hosts.conf"
+    try:
+        old = ""
+        if os.path.isfile(path):
+            with open(path) as f:
+                old = f.read()
+        changed = old != conf
+        if changed:
+            with open(path, "w") as f:
+                f.write(conf)
+        try:
+            if os.path.isfile("/etc/dnsmasq.d/fguard-unifi.conf"):
+                os.remove("/etc/dnsmasq.d/fguard-unifi.conf")
+                changed = True
+        except Exception:
+            pass
+        if changed and restart:
+            run(["systemctl", "restart", "dnsmasq"])
+        return True, "Local DNS hosts applied" if changed else "Local DNS hosts unchanged"
+    except Exception as e:
+        return False, str(e)
+
+
 # ─── DNS (resolv.conf / systemd-resolved) ─────────────────────────────────────
 
 def apply_dns_settings():
     if not IS_LINUX:
         return False, "Linux only"
+    write_dns_hosts(restart=True)
     s = database.get_dns_settings()
     servers = [s.get("primary_dns", "1.1.1.1"),
                s.get("secondary_dns", "8.8.8.8"),

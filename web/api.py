@@ -39,6 +39,10 @@ from core import updater
 from core import config_backup
 
 database.initialize()
+try:
+    network_manager.write_dns_hosts(restart=True)
+except Exception:
+    pass
 file_filter.seed_defaults()
 ensure_default_admin()
 ips.start()
@@ -420,6 +424,7 @@ async def network_page(request: Request, tab: Optional[str] = "interfaces"):
                 nat_rules=database.get_nat_rules(),
                 qos_rules=database.get_qos_rules(),
                 dns=database.get_dns_settings(),
+                dns_hosts=database.get_dns_hosts(),
                 vlans=database.get_vlans(),
                 dmz_configs=database.get_dmz_configs())
 
@@ -819,6 +824,30 @@ async def api_save_dns(request: Request):
 @app.post("/api/dns/apply")
 async def api_apply_dns():
     ok, msg = network_manager.apply_dns_settings(); return {"status":"ok" if ok else "error","message":msg}
+
+class DnsHost(BaseModel):
+    hostname: str
+    ip: str
+    comment: str = ""
+
+@app.get("/api/dns/hosts")
+async def api_get_dns_hosts():
+    return database.get_dns_hosts()
+
+@app.post("/api/dns/hosts")
+async def api_add_dns_host(h: DnsHost):
+    try:
+        database.add_dns_host(h.hostname, h.ip, h.comment)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    network_manager.write_dns_hosts(restart=True)
+    return {"status": "ok"}
+
+@app.delete("/api/dns/hosts/{hid}")
+async def api_del_dns_host(hid: int):
+    database.delete_dns_host(hid)
+    network_manager.write_dns_hosts(restart=True)
+    return {"status": "ok"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
