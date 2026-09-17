@@ -1,9 +1,9 @@
 {
-  "version": "1.0.20",
+  "version": "1.0.21",
   "date": "2026-09-17",
   "product": "FGUARD",
   "changelog": [
-    "DNS: do not use ISP-intercepted 8.8.8.8 as dnsmasq upstream (ping works, sites fail)",
-    "DNS: raise dnsmasq forward limit and cache; query upstreams in order"
+    "UI: top-bar Blocked counts real BLOCK/DROP/THREAT logs, not all events today",
+    "UI: dashboard cards no longer share IDs with the top bar (CPU/mem/connections update correctly)"
   ]
 }

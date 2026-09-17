@@ -986,8 +986,18 @@ def get_log_stats():
     today_count = conn.execute(
         "SELECT COUNT(*) as c FROM logs WHERE timestamp LIKE ?", (f"{today}%",)
     ).fetchone()["c"]
+    today_blocked = conn.execute(
+        "SELECT COUNT(*) as c FROM logs WHERE action IN ('BLOCK','DROP','THREAT') AND timestamp LIKE ?",
+        (f"{today}%",),
+    ).fetchone()["c"]
     conn.close()
-    return {"total": total, "blocked": blocked, "allowed": allowed, "today": today_count}
+    return {
+        "total": total,
+        "blocked": blocked,
+        "allowed": allowed,
+        "today": today_count,
+        "today_blocked": today_blocked,
+    }
 
 
 # ─── 72-hour stats reset ──────────────────────────────────────────────────────

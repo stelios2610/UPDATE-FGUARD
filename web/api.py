@@ -525,7 +525,8 @@ async def api_dashboard():
         cpu, mem, disk = 0, None, None
     return {
         "connections": len(conns),
-        "blocked_today": stats["today"],
+        "blocked": stats["blocked"],
+        "blocked_today": stats.get("today_blocked", 0),
         "threats": len(alerts),
         "total_logs": stats["total"],
         "bytes_sent": net["bytes_sent"],

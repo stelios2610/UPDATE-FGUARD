@@ -8,15 +8,15 @@
 <!-- Stat Cards -->
 <div class="grid grid-5 mb-8" style="margin-bottom:16px">
   <div class="stat-card blue">
-    <div class="value" id="stat-conns">{{ conn_count }}</div>
+    <div class="value" id="dash-conns">{{ conn_count }}</div>
     <div class="label">Active Connections</div>
   </div>
   <div class="stat-card red">
-    <div class="value" id="stat-blocked">{{ stats.blocked }}</div>
+    <div class="value" id="dash-blocked">{{ stats.blocked }}</div>
     <div class="label">Total Blocked</div>
   </div>
   <div class="stat-card orange">
-    <div class="value" id="stat-threats">{{ threat_count }}</div>
+    <div class="value" id="dash-threats">{{ threat_count }}</div>
     <div class="label">Threats Detected</div>
   </div>
   <div class="stat-card green">
@@ -32,11 +32,11 @@
 <!-- System stats row -->
 <div class="grid grid-4" style="margin-bottom:16px">
   <div class="stat-card">
-    <div class="value" id="stat-cpu" style="font-size:20px">—</div>
+    <div class="value" id="dash-cpu" style="font-size:20px">—</div>
     <div class="label">CPU Usage</div>
   </div>
   <div class="stat-card">
-    <div class="value" id="stat-mem" style="font-size:20px">—</div>
+    <div class="value" id="dash-mem" style="font-size:20px">—</div>
     <div class="label">Memory Usage</div>
   </div>
   <div class="stat-card green">

@@ -52,11 +52,17 @@ async function refreshDashboardStats() {
   try {
     const d = await GET('/api/dashboard');
     const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    const blocked = (d.blocked != null) ? d.blocked : (d.blocked_today || 0);
     set('stat-conns', d.connections);
-    set('stat-blocked', d.blocked_today);
+    set('dash-conns', d.connections);
+    set('stat-blocked', blocked);
+    set('dash-blocked', blocked);
     set('stat-threats', d.threats);
+    set('dash-threats', d.threats);
     set('stat-cpu', d.cpu_percent.toFixed(1) + '%');
+    set('dash-cpu', d.cpu_percent.toFixed(1) + '%');
     set('stat-mem', d.mem_percent.toFixed(1) + '%');
+    set('dash-mem', d.mem_percent.toFixed(1) + '%');
     set('stat-sent', d.bytes_sent_fmt);
     set('stat-recv', d.bytes_recv_fmt);
   } catch (e) { console.warn('Stats refresh error:', e); }
