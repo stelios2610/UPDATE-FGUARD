@@ -11,7 +11,7 @@
     <div style="font-size:36px;margin-bottom:8px">🔒</div>
     <div style="font-size:17px;font-weight:700;color:var(--danger);margin-bottom:6px">WebBlocker — License Required</div>
     <div style="color:var(--text-muted);font-size:14px;max-width:460px;margin:0 auto">
-      Web Filter is disabled because your FGUARD UTC license is
+      Web Filter is disabled because your FGUARD license is
       {% if lic_status == 'expired' %}expired{% else %}not activated{% endif %}.
       Your existing rules are preserved and will resume automatically when the license is renewed.
     </div>
@@ -23,7 +23,7 @@
 
 {% if not is_root %}
 <div class="alert alert-warning">
-  ⚠ FGUARD UTC is not running as administrator. Applying host-based web filters requires elevated privileges.
+  ⚠ FGUARD is not running as administrator. Applying host-based web filters requires elevated privileges.
 </div>
 {% endif %}
 
@@ -228,7 +228,7 @@ async function applyHosts() {
 }
 
 async function removeHosts() {
-  if (!confirm2('Remove FGUARD UTC entries from the hosts file?')) return;
+  if (!confirm2('Remove FGUARD entries from the hosts file?')) return;
   try {
     const r = await POST('/api/webfilter/remove');
     if (r.status === 'ok') toast('Hosts entries removed', 'success');

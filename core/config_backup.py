@@ -10,7 +10,8 @@ from datetime import datetime
 
 from db import database
 
-MAGIC = "FGUARD-UTC-CONFIG"
+MAGIC = "FGUARD-CONFIG"
+LEGACY_MAGIC = "FGUARD-UTC-CONFIG"
 FORMAT_VERSION = 1
 MAX_BYTES = 64 * 1024 * 1024
 SKIP_TABLES = ("logs", "dhcp_leases", "file_filter_submissions")
@@ -84,7 +85,7 @@ def build_backup():
     manifest = {
         "magic": MAGIC,
         "format": FORMAT_VERSION,
-        "product": "FGUARD UTC",
+        "product": "FGUARD",
         "version": _version(),
         "hostname": hostname,
         "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -116,9 +117,9 @@ def _read_manifest(zf):
         raw = zf.read("manifest.json")
         data = json.loads(raw.decode("utf-8"))
     except Exception:
-        raise ValueError("Not an FGUARD UTC configuration file (missing manifest)")
-    if data.get("magic") != MAGIC:
-        raise ValueError("Not an FGUARD UTC configuration file")
+        raise ValueError("Not an FGUARD configuration file (missing manifest)")
+    if data.get("magic") not in (MAGIC, LEGACY_MAGIC):
+        raise ValueError("Not an FGUARD configuration file")
     fmt = int(data.get("format") or 0)
     if fmt < 1 or fmt > FORMAT_VERSION:
         raise ValueError(f"Unsupported config format version {fmt}")
@@ -136,7 +137,7 @@ def restore_backup(data: bytes):
     try:
         zf = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile:
-        raise ValueError("Not a valid FGUARD UTC .conf backup")
+        raise ValueError("Not a valid FGUARD .conf backup")
     with zf:
         manifest = _read_manifest(zf)
         db_bytes = zf.read("firewall.db")
@@ -204,5 +205,5 @@ def restore_backup(data: bytes):
         "from_hostname": manifest.get("hostname"),
         "from_version": manifest.get("version"),
         "created_at": manifest.get("created_at"),
-        "message": "Configuration restored. Restart FGUARD UTC so VPN/network services pick up the new settings. License stays on this device.",
+        "message": "Configuration restored. Restart FGUARD so VPN/network services pick up the new settings. License stays on this device.",
     }

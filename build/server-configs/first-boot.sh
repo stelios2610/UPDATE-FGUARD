@@ -1,9 +1,9 @@
 #!/bin/bash
-# FGUARD UTC First Boot Setup
-# Runs once after ISO install via aegisguard-firstboot.service
+# FGUARD First Boot Setup
+# Runs once after ISO install via fguard-firstboot.service
 
 LOGFILE="/var/log/fguard-firstboot.log"
-DONE_FLAG="/etc/aegisguard/.firstboot_done"
+DONE_FLAG="/etc/fguard/.firstboot_done"
 
 exec > >(tee -a "$LOGFILE") 2>&1
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
@@ -13,8 +13,8 @@ if [ -f "$DONE_FLAG" ]; then
     exit 0
 fi
 
-log "=== FGUARD UTC First Boot Setup ==="
-mkdir -p /etc/aegisguard
+log "=== FGUARD First Boot Setup ==="
+mkdir -p /etc/fguard
 
 # ── 1. Detect interfaces ──────────────────────────────────────────────────────
 IFACES=($(ls /sys/class/net | grep -v lo | sort))
@@ -79,7 +79,36 @@ iptables -P INPUT DROP 2>/dev/null || true
 netfilter-persistent save 2>/dev/null || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
 log "Firewall: WAN locked, LAN open"
 
-# ── 7. dnsmasq ───────────────────────────────────────────────────────────────
+# ── 7. Policy routing rules (survive reboot via systemd) ─────────────────────
+cat > /usr/local/sbin/fguard-ip-rules.sh << 'IPRULES'
+#!/bin/bash
+# Re-apply ip rules on every boot so SSL VPN traffic is routed via main
+# table (bypassing ISP L3VPN table 220) when WireGuard tunnels are present.
+ip rule add from 10.8.0.0/24 lookup main priority 210 2>/dev/null || true
+IPRULES
+chmod 755 /usr/local/sbin/fguard-ip-rules.sh
+
+cat > /etc/systemd/system/fguard-ip-rules.service << 'SVC'
+[Unit]
+Description=FGUARD policy routing rules
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/fguard-ip-rules.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+SVC
+
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable fguard-ip-rules.service 2>/dev/null || true
+systemctl start  fguard-ip-rules.service 2>/dev/null || true
+log "Policy routing rules installed and enabled"
+
+# ── 9. dnsmasq ───────────────────────────────────────────────────────────────
 sed -i 's/#DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf 2>/dev/null || true
 sed -i 's/DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf 2>/dev/null || true
 systemctl restart systemd-resolved 2>/dev/null || true
@@ -103,40 +132,40 @@ systemctl enable dnsmasq 2>/dev/null || true
 systemctl restart dnsmasq 2>/dev/null || true
 log "dnsmasq: LAN DHCP 10.0.0.100-200"
 
-# ── 8. Python venv (only if missing — existing servers skip this) ─────────────
-if [ ! -d /opt/aegisguard/venv ]; then
+# ── 10. Python venv (only if missing — existing servers skip this) ───────────
+if [ ! -d /opt/fguard/venv ]; then
     log "Creating Python venv..."
-    python3 -m venv /opt/aegisguard/venv
+    python3 -m venv /opt/fguard/venv
 
     WHEELS_DIR="/opt/fguard-wheels"
     if [ -d "$WHEELS_DIR" ] && [ "$(ls -A "$WHEELS_DIR" 2>/dev/null)" ]; then
         log "Installing packages from embedded wheels..."
-        /opt/aegisguard/venv/bin/pip install --quiet \
+        /opt/fguard/venv/bin/pip install --quiet \
             --no-index --find-links "$WHEELS_DIR" \
             fastapi "uvicorn[standard]" jinja2 pydantic python-multipart \
             psutil bcrypt qrcode pillow python-dotenv PyYAML 2>/dev/null || \
-        /opt/aegisguard/venv/bin/pip install --quiet \
+        /opt/fguard/venv/bin/pip install --quiet \
             fastapi "uvicorn[standard]" jinja2 pydantic python-multipart \
             psutil bcrypt qrcode pillow python-dotenv PyYAML
     else
         log "Installing packages from PyPI..."
-        /opt/aegisguard/venv/bin/pip install --quiet \
+        /opt/fguard/venv/bin/pip install --quiet \
             fastapi "uvicorn[standard]" jinja2 pydantic python-multipart \
             psutil bcrypt qrcode pillow python-dotenv PyYAML
     fi
     log "Python packages installed"
 fi
 
-# ── 9. Initialize DB + update interface names ─────────────────────────────────
-PYTHON_BIN="/opt/aegisguard/venv/bin/python"
+# ── 11. Initialize DB + update interface names ───────────────────────────────
+PYTHON_BIN="/opt/fguard/venv/bin/python"
 [ ! -f "$PYTHON_BIN" ] && PYTHON_BIN="python3"
 
-cd /opt/aegisguard
+cd /opt/fguard
 $PYTHON_BIN -c 'from db import database; database.initialize()' 2>/dev/null || true
 
 $PYTHON_BIN - << PYEOF || log "DB interface update skipped"
 import sys
-sys.path.insert(0, '/opt/aegisguard')
+sys.path.insert(0, '/opt/fguard')
 from db import database
 database.initialize()
 conn = database.get_connection()
@@ -150,28 +179,29 @@ conn.close()
 print("DB updated: WAN=${WAN_IF} LAN=${LAN_IF}")
 PYEOF
 
-# ── 10. SSL cert for nginx ────────────────────────────────────────────────────
-if [ ! -f /etc/nginx/ssl/aegisguard.crt ]; then
+# ── 12. SSL cert for nginx ───────────────────────────────────────────────────
+if [ ! -f /etc/nginx/ssl/fguard.crt ]; then
     mkdir -p /etc/nginx/ssl
     openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-        -keyout /etc/nginx/ssl/aegisguard.key \
-        -out    /etc/nginx/ssl/aegisguard.crt \
-        -subj   "/CN=FGUARD-UTC/O=FGUARD/C=GR" 2>/dev/null || true
-    chmod 640 /etc/nginx/ssl/aegisguard.key 2>/dev/null || true
+        -keyout /etc/nginx/ssl/fguard.key \
+        -out    /etc/nginx/ssl/fguard.crt \
+        -subj   "/CN=FGUARD/O=FGUARD/C=GR" 2>/dev/null || true
+    chmod 640 /etc/nginx/ssl/fguard.key 2>/dev/null || true
     log "SSL cert generated"
 fi
 
-# ── 11. Start services ────────────────────────────────────────────────────────
-systemctl enable aegisguard nginx fail2ban 2>/dev/null || true
+# ── 13. Start services ───────────────────────────────────────────────────────
+systemctl enable ssh openssh-server fguard nginx fail2ban 2>/dev/null || true
+systemctl start ssh 2>/dev/null || systemctl start openssh-server 2>/dev/null || true
 systemctl restart nginx 2>/dev/null || true
-systemctl start aegisguard 2>/dev/null || true
+systemctl start fguard 2>/dev/null || true
 log "Services started"
 
-# ── 12. MOTD ──────────────────────────────────────────────────────────────────
+# ── 14. MOTD ─────────────────────────────────────────────────────────────────
 cat > /etc/motd << 'MOTD'
 
   ╔══════════════════════════════════════════════════════╗
-  ║           FGUARD UTC Network Security v1.0           ║
+  ║           FGUARD Network Security v1.0           ║
   ║                                                      ║
   ║  Web UI:  https://10.0.0.1:8080  (LAN only)          ║
   ║  SSH:     ssh stelios@10.0.0.1   (LAN only)          ║
@@ -182,8 +212,8 @@ cat > /etc/motd << 'MOTD'
 
 MOTD
 
-# ── 13. Done ──────────────────────────────────────────────────────────────────
+# ── 15. Done ─────────────────────────────────────────────────────────────────
 touch "$DONE_FLAG"
-log "=== FGUARD UTC first boot complete ==="
+log "=== FGUARD first boot complete ==="
 log "Web UI: https://10.0.0.1:8080"
 log "Log: $LOGFILE"

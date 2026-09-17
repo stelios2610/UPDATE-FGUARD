@@ -1,0 +1,30 @@
+[Unit]
+Description=FGUARD Network Security Suite
+Documentation=https://github.com/stelios2610/AegisGuard
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/fguard
+ExecStart=/opt/fguard/venv/bin/python -m uvicorn web.api:app --host 0.0.0.0 --port 8080 --workers 1
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fguard
+
+# Systemd security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

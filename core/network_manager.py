@@ -78,7 +78,7 @@ def write_network_config(ifaces):
 
 
 def _write_netplan(ifaces):
-    """Write 50-aegisguard.yaml. Always keep VLANs; never put a default
+    """Write 50-fguard.yaml. Always keep VLANs; never put a default
     route on LAN. Saving/deleting a NIC must not wipe eth1.10 / eth1.20."""
     wan_if = database.get_setting("wan_interface") or "ens1"
     vlans = [v for v in database.get_vlans() if v.get("enabled")]
@@ -138,12 +138,17 @@ def _write_netplan(ifaces):
             vmap[key] = vent
         config["network"]["vlans"] = vmap
 
-    path = "/etc/netplan/50-aegisguard.yaml"
+    path = "/etc/netplan/50-fguard.yaml"
     try:
         import yaml
         with open(path, "w") as f:
             yaml.dump(config, f, default_flow_style=False, sort_keys=False)
         os.chmod(path, 0o600)
+        try:
+            if os.path.isfile("/etc/netplan/50-aegisguard.yaml"):
+                os.remove("/etc/netplan/50-aegisguard.yaml")
+        except Exception:
+            pass
         run(["netplan", "apply"])
         return True, "Netplan config applied"
     except ImportError:
@@ -156,7 +161,7 @@ def _write_netplan(ifaces):
 
 
 def _write_interfaces_file(ifaces):
-    lines = ["# AegisGuard network config", "auto lo", "iface lo inet loopback", ""]
+    lines = ["# FGUARD network config", "auto lo", "iface lo inet loopback", ""]
     for iface in ifaces:
         if not iface.get("enabled"):
             continue
@@ -200,7 +205,7 @@ def write_dhcp_config():
             iface_ips.setdefault(vkey, v["ip_address"])
 
     lines = [
-        "# AegisGuard DHCP config (dnsmasq)",
+        "# FGUARD DHCP config (dnsmasq)",
         "no-resolv",
         "no-poll",
         "bogus-priv",
@@ -291,25 +296,30 @@ def write_dhcp_config():
 
     conf = "\n".join(lines) + "\n"
     try:
-        # Remove old AegisGuard block if it was previously embedded in dnsmasq.conf
+        # Remove old FGUARD block if it was previously embedded in dnsmasq.conf
         main_conf_path = "/etc/dnsmasq.conf"
         try:
             with open(main_conf_path) as f:
                 main = f.read()
-            idx = main.find("# AegisGuard DHCP config")
+            idx = main.find("# FGUARD DHCP config")
             if idx != -1:
                 with open(main_conf_path, "w") as f:
                     f.write(main[:idx].rstrip() + "\n")
         except Exception:
             pass
 
-        with open("/etc/dnsmasq.d/aegisguard.conf", "w") as f:
+        with open("/etc/dnsmasq.d/fguard.conf", "w") as f:
             f.write(conf)
+        try:
+            if os.path.isfile("/etc/dnsmasq.d/aegisguard.conf"):
+                os.remove("/etc/dnsmasq.d/aegisguard.conf")
+        except Exception:
+            pass
 
         # Safety net: re-read and patch any missing VLAN interface= lines.
         # Guards against DB edge-cases or future regressions that would break
         # DNS for LAN clients without affecting DHCP.
-        with open("/etc/dnsmasq.d/aegisguard.conf") as f:
+        with open("/etc/dnsmasq.d/fguard.conf") as f:
             written = f.read()
         missing_ifaces = [
             f"interface={v['parent_interface']}.{v['vlan_id']}"
@@ -317,7 +327,7 @@ def write_dhcp_config():
             if v.get("enabled") and f"interface={v['parent_interface']}.{v['vlan_id']}" not in written
         ]
         if missing_ifaces:
-            with open("/etc/dnsmasq.d/aegisguard.conf", "a") as f:
+            with open("/etc/dnsmasq.d/fguard.conf", "a") as f:
                 f.write("\n" + "\n".join(missing_ifaces) + "\n")
 
         run(["systemctl", "restart", "dnsmasq"])
@@ -793,7 +803,7 @@ def get_dhcp_relay_status():
     ok, out, _ = run(["systemctl", "is-active", "dnsmasq"])
     if ok:
         try:
-            with open("/etc/dnsmasq.d/aegisguard.conf") as f:
+            with open("/etc/dnsmasq.d/fguard.conf") as f:
                 if "dhcp-relay=" in f.read():
                     return {"running": True, "process": "dnsmasq dhcp-relay"}
         except Exception:
@@ -903,7 +913,7 @@ def apply_vlans():
     # Persist VLAN interfaces in netplan
     _write_vlan_netplan(vlans, wan_if)
 
-    # Single writer for dnsmasq — never overwrite aegisguard.conf here.
+    # Single writer for dnsmasq — never overwrite fguard.conf here.
     # A separate VLAN-only dump wipes dhcp-relay and AD DNS forwards.
     write_dhcp_config()
 

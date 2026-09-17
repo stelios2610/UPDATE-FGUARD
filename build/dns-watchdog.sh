@@ -1,7 +1,7 @@
 #!/bin/bash
 # DNS watchdog: keep VLAN interfaces listed in dnsmasq. Do NOT restart
 # dnsmasq because an external probe failed (web filter / AD / google).
-CONF="/etc/dnsmasq.d/aegisguard.conf"
+CONF="/etc/dnsmasq.d/fguard.conf"
 CHANGED=0
 
 for VIFACE in eth1.10 eth1.20; do

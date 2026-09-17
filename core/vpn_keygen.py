@@ -77,14 +77,14 @@ def generate_openvpn_pki(output_dir, server_name="server", client_name="client",
     steps.append(("CA key", ok, err))
     ok, _, err = run(["openssl", "req", "-new", "-x509", "-days", str(days),
                       "-key", ca_key, "-out", ca_cert,
-                      "-subj", f"/CN=FGUARD-UTC-CA/O=FGUARD UTC/C=GR"])
+                      "-subj", f"/CN=FGUARD-CA/O=FGUARD/C=GR"])
     steps.append(("CA cert", ok, err))
 
     # Server key + cert
     ok, _, err = run(["openssl", "genrsa", "-out", server_key, str(key_bits)])
     steps.append(("Server key", ok, err))
     ok, _, err = run(["openssl", "req", "-new", "-key", server_key, "-out", server_csr,
-                      "-subj", f"/CN={server_name}/O=FGUARD UTC/C=GR"])
+                      "-subj", f"/CN={server_name}/O=FGUARD/C=GR"])
     steps.append(("Server CSR", ok, err))
     ok, _, err = run(["openssl", "x509", "-req", "-days", str(days),
                       "-in", server_csr, "-CA", ca_cert, "-CAkey", ca_key,
@@ -95,7 +95,7 @@ def generate_openvpn_pki(output_dir, server_name="server", client_name="client",
     ok, _, err = run(["openssl", "genrsa", "-out", client_key, str(key_bits)])
     steps.append(("Client key", ok, err))
     ok, _, err = run(["openssl", "req", "-new", "-key", client_key, "-out", client_csr,
-                      "-subj", f"/CN={client_name}/O=FGUARD UTC/C=GR"])
+                      "-subj", f"/CN={client_name}/O=FGUARD/C=GR"])
     steps.append(("Client CSR", ok, err))
     ok, _, err = run(["openssl", "x509", "-req", "-days", str(days),
                       "-in", client_csr, "-CA", ca_cert, "-CAkey", ca_key,
@@ -143,7 +143,7 @@ def generate_openvpn_server_config(pki_dir, server_name="server",
         except Exception:
             return f"; File not found: {path}"
 
-    return f"""# FGUARD UTC - OpenVPN Server Config
+    return f"""# FGUARD - OpenVPN Server Config
 # Generated: {datetime.now().isoformat()}
 
 port {port}
@@ -201,7 +201,7 @@ def generate_openvpn_client_config(server_ip, pki_dir, client_name="client",
         except Exception:
             return f"; File not found: {path}"
 
-    return f"""# FGUARD UTC - OpenVPN Client Config
+    return f"""# FGUARD - OpenVPN Client Config
 # Generated: {datetime.now().isoformat()}
 
 client

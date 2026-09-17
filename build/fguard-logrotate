@@ -1,0 +1,23 @@
+# FGUARD log rotation — keeps total under 2GB
+/var/log/fguard/*.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    size 100M
+    maxsize 500M
+    postrotate
+        systemctl reload fguard 2>/dev/null || true
+    endscript
+}
+
+/var/log/openvpn/*.log {
+    weekly
+    rotate 8
+    compress
+    missingok
+    notifempty
+    size 200M
+}

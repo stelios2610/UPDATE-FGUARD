@@ -12,7 +12,7 @@
     <div class="card-header">Installed Version</div>
     <div style="padding:16px;display:flex;align-items:center;gap:16px">
       <div style="font-size:28px;font-weight:700;color:var(--accent)">{{ local_version }}</div>
-      <div style="color:var(--text-muted);font-size:13px">FGUARD UTC</div>
+      <div style="color:var(--text-muted);font-size:13px">FGUARD</div>
       <div style="margin-left:auto">
         <button class="btn btn-secondary" onclick="checkNow()" id="btn-check">Check Now</button>
       </div>
@@ -28,7 +28,7 @@
     <div style="padding:20px;text-align:center">
       <div style="font-size:32px;margin-bottom:8px">🔒</div>
       <div style="font-weight:600;color:var(--warning);margin-bottom:4px">No Valid License</div>
-      <div style="color:var(--text-muted);font-size:13px">Updates require an active FGUARD UTC license.</div>
+      <div style="color:var(--text-muted);font-size:13px">Updates require an active FGUARD license.</div>
     </div>
   </div>
 
@@ -87,7 +87,7 @@
     <div style="padding:24px;text-align:center">
       <div style="font-size:32px;margin-bottom:8px">✓</div>
       <div style="font-weight:600;color:var(--success);margin-bottom:4px">Up to Date</div>
-      <div style="color:var(--text-muted);font-size:13px">You are running the latest version of FGUARD UTC.</div>
+      <div style="color:var(--text-muted);font-size:13px">You are running the latest version of FGUARD.</div>
     </div>
   </div>
   {% endif %}
@@ -120,7 +120,7 @@ async function downloadUpdate() {
 }
 
 async function applyUpdate() {
-  if (!confirm('Apply update and restart FGUARD UTC?\n\nActive connections will be interrupted briefly.')) return;
+  if (!confirm('Apply update and restart FGUARD?\n\nActive connections will be interrupted briefly.')) return;
   const btn = document.getElementById('btn-apply');
   btn.textContent = 'Applying...'; btn.disabled = true;
   try {

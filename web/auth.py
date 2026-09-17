@@ -1,4 +1,4 @@
-"""FGUARD UTC session-based authentication (no extra dependencies)."""
+"""FGUARD session-based authentication (no extra dependencies)."""
 import secrets
 import hashlib
 import hmac

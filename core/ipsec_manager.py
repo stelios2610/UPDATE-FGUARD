@@ -26,35 +26,35 @@ def create_ipsec_tunnel(name, local_ip, remote_ip, psk, local_subnet, remote_sub
     """
     # Create IKE main mode policy
     script = f"""
-$mmCrypto = New-NetIPsecMainModeCryptoSet -Name "AegisGuard-MM-{name}" `
-    -DisplayName "AegisGuard MM {name}" `
+$mmCrypto = New-NetIPsecMainModeCryptoSet -Name "FGUARD-MM-{name}" `
+    -DisplayName "FGUARD MM {name}" `
     -Proposal (New-NetIPsecMainModeCryptoProposal `
         -Encryption {ike_cipher} `
         -Hash {ike_hash} `
         -KeyExchange {dh_group})
 
-$qmCrypto = New-NetIPsecQuickModeCryptoSet -Name "AegisGuard-QM-{name}" `
-    -DisplayName "AegisGuard QM {name}" `
+$qmCrypto = New-NetIPsecQuickModeCryptoSet -Name "FGUARD-QM-{name}" `
+    -DisplayName "FGUARD QM {name}" `
     -Proposal (New-NetIPsecQuickModeCryptoProposal `
         -Encryption {esp_cipher} `
         -ESPHash {esp_hash} `
         -Encapsulation ESP)
 
 $auth = New-NetIPsecAuthProposal -Machine -PreSharedKey "{psk}"
-$authSet = New-NetIPsecPhase1AuthSet -Name "AegisGuard-Auth-{name}" `
-    -DisplayName "AegisGuard Auth {name}" `
+$authSet = New-NetIPsecPhase1AuthSet -Name "FGUARD-Auth-{name}" `
+    -DisplayName "FGUARD Auth {name}" `
     -Proposal $auth
 
-New-NetIPsecRule -Name "AegisGuard-IPSec-{name}" `
-    -DisplayName "AegisGuard IPSec {name}" `
+New-NetIPsecRule -Name "FGUARD-IPSec-{name}" `
+    -DisplayName "FGUARD IPSec {name}" `
     -LocalAddress {local_subnet} `
     -RemoteAddress {remote_subnet} `
-    -Phase1AuthSet "AegisGuard-Auth-{name}" `
+    -Phase1AuthSet "FGUARD-Auth-{name}" `
     -InboundSecurity Require `
     -OutboundSecurity Require `
     -KeyModule IKEv2 `
-    -MainModeCryptoSet "AegisGuard-MM-{name}" `
-    -QuickModeCryptoSet "AegisGuard-QM-{name}"
+    -MainModeCryptoSet "FGUARD-MM-{name}" `
+    -QuickModeCryptoSet "FGUARD-QM-{name}"
 """
     ok, out, err = _ps(script, timeout=30)
     if ok or "already exists" in err.lower():
@@ -65,10 +65,10 @@ New-NetIPsecRule -Name "AegisGuard-IPSec-{name}" `
 
 def remove_ipsec_tunnel(name):
     script = f"""
-Remove-NetIPsecRule -Name "AegisGuard-IPSec-{name}" -ErrorAction SilentlyContinue
-Remove-NetIPsecMainModeCryptoSet -Name "AegisGuard-MM-{name}" -ErrorAction SilentlyContinue
-Remove-NetIPsecQuickModeCryptoSet -Name "AegisGuard-QM-{name}" -ErrorAction SilentlyContinue
-Remove-NetIPsecPhase1AuthSet -Name "AegisGuard-Auth-{name}" -ErrorAction SilentlyContinue
+Remove-NetIPsecRule -Name "FGUARD-IPSec-{name}" -ErrorAction SilentlyContinue
+Remove-NetIPsecMainModeCryptoSet -Name "FGUARD-MM-{name}" -ErrorAction SilentlyContinue
+Remove-NetIPsecQuickModeCryptoSet -Name "FGUARD-QM-{name}" -ErrorAction SilentlyContinue
+Remove-NetIPsecPhase1AuthSet -Name "FGUARD-Auth-{name}" -ErrorAction SilentlyContinue
 """
     ok, out, err = _ps(script)
     database.add_log("INFO", details=f"IPSec tunnel removed: {name}")
@@ -77,7 +77,7 @@ Remove-NetIPsecPhase1AuthSet -Name "AegisGuard-Auth-{name}" -ErrorAction Silentl
 
 def get_ipsec_tunnels():
     script = """
-Get-NetIPsecRule | Where-Object {$_.Name -like 'AegisGuard-IPSec-*'} |
+Get-NetIPsecRule | Where-Object {$_.Name -like 'FGUARD-IPSec-*'} |
     Select-Object Name, DisplayName, Enabled, PrimaryStatus |
     ConvertTo-Json
 """
@@ -112,12 +112,12 @@ Get-NetIPsecMainModeSA | Select-Object LocalAddress, RemoteAddress, State |
 
 
 def enable_ipsec_tunnel(name):
-    ok, out, err = _ps(f'Set-NetIPsecRule -Name "AegisGuard-IPSec-{name}" -Enabled True')
+    ok, out, err = _ps(f'Set-NetIPsecRule -Name "FGUARD-IPSec-{name}" -Enabled True')
     return ok, err or out
 
 
 def disable_ipsec_tunnel(name):
-    ok, out, err = _ps(f'Set-NetIPsecRule -Name "AegisGuard-IPSec-{name}" -Enabled False')
+    ok, out, err = _ps(f'Set-NetIPsecRule -Name "FGUARD-IPSec-{name}" -Enabled False')
     return ok, err or out
 
 

@@ -67,7 +67,7 @@ def _netsh(args):
 
 
 def _sync_rule_windows(rule):
-    name = f"AegisGuard-{rule['id']}-{rule['name']}"
+    name = f"FGUARD-{rule['id']}-{rule['name']}"
     _netsh(["delete", "rule", f"name={name}"])
     if not rule["enabled"]:
         return True, "Disabled"
@@ -98,13 +98,13 @@ def _sync_rule_windows(rule):
 
 
 def _remove_rule_windows(rule):
-    name = f"AegisGuard-{rule['id']}-{rule['name']}"
+    name = f"FGUARD-{rule['id']}-{rule['name']}"
     return _netsh(["delete", "rule", f"name={name}"])
 
 
 # ─── Linux backend (iptables) ─────────────────────────────────────────────────
 
-CHAIN_PREFIX = "AEGISGUARD"
+CHAIN_PREFIX = "FGUARD"
 
 
 def _ipt(args, table=None):
@@ -128,8 +128,8 @@ def _ensure_chains():
     for chain in ("INPUT", "OUTPUT", "FORWARD"):
         ag_chain = f"{CHAIN_PREFIX}_{chain}"
         _ipt(["-N", ag_chain])
-        # Do not flush: GeoIP and other INPUT rules live in AEGISGUARD_INPUT.
-        # A flush on every aegisguard start silently disables geoblock.
+        # Do not flush: GeoIP and other INPUT rules live in FGUARD_INPUT.
+        # A flush on every fguard start silently disables geoblock.
         ok, _, _ = run([
             "iptables", "-C", ag_chain,
             "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT",
@@ -161,7 +161,7 @@ def _port_to_iptables(port_str):
 
 
 def _sync_rule_linux(rule):
-    rule_tag = f"--comment aegisguard_{rule['id']}"
+    rule_tag = f"--comment fguard_{rule['id']}"
     # Remove old rule first
     _remove_rule_linux(rule)
 
@@ -196,7 +196,7 @@ def _sync_rule_linux(rule):
             if dp:
                 args += ["--dport", dp]
 
-        args += ["-m", "comment", "--comment", f"aegisguard_{rule['id']}"]
+        args += ["-m", "comment", "--comment", f"fguard_{rule['id']}"]
         args += ["-j", action]
 
         ok, msg = _ipt(args)
@@ -206,7 +206,7 @@ def _sync_rule_linux(rule):
 
 
 def _remove_rule_linux(rule):
-    tag = f"aegisguard_{rule['id']}"
+    tag = f"fguard_{rule['id']}"
     for chain in (f"{CHAIN_PREFIX}_INPUT", f"{CHAIN_PREFIX}_OUTPUT", f"{CHAIN_PREFIX}_FORWARD"):
         while True:
             ok, out, _ = run(["iptables", "-L", chain, "--line-numbers", "-n"])
@@ -228,7 +228,7 @@ def _setup_linux_forwarding():
         run(["sysctl", "-w", "net.ipv4.ip_forward=1"])
         run(["sysctl", "-w", "net.ipv4.conf.all.forwarding=1"])
         # Persist across reboots
-        sysctl_conf = "/etc/sysctl.d/99-aegisguard.conf"
+        sysctl_conf = "/etc/sysctl.d/99-fguard.conf"
         try:
             with open(sysctl_conf, "w") as f:
                 f.write("net.ipv4.ip_forward = 1\nnet.ipv4.conf.all.forwarding = 1\n")
@@ -383,7 +383,7 @@ def setup_router_mode(wan_iface, lan_iface):
 
 
 def flush_all_rules():
-    """Remove all FGUARD UTC rules from the system."""
+    """Remove all FGUARD rules from the system."""
     if IS_LINUX:
         for chain in (f"{CHAIN_PREFIX}_INPUT", f"{CHAIN_PREFIX}_OUTPUT", f"{CHAIN_PREFIX}_FORWARD"):
             _ipt(["-F", chain])

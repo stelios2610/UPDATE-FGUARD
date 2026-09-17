@@ -67,7 +67,7 @@ def update_blocklists():
 
     for feed_name, url in FEED_URLS.items():
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "FGUARD-UTC/1.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "FGUARD/1.0"})
             with urllib.request.urlopen(req, timeout=30) as r:
                 content = r.read().decode("utf-8", errors="ignore")
             count = 0
@@ -165,7 +165,7 @@ def lookup_ip(ip):
     """Lookup IP geolocation. Uses ip-api.com (free, 45 req/min limit)."""
     try:
         url = f"http://ip-api.com/json/{ip}?fields=status,country,countryCode,regionName,city,isp,org,as,proxy,hosting"
-        req = urllib.request.Request(url, headers={"User-Agent": "FGUARD-UTC/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "FGUARD/1.0"})
         with urllib.request.urlopen(req, timeout=5) as r:
             data = json.loads(r.read())
         return data

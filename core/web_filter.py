@@ -6,9 +6,9 @@ from db import database
 from core.platform import IS_LINUX, run
 
 HOSTS_PATH      = "/etc/hosts" if IS_LINUX else r"C:\Windows\System32\drivers\etc\hosts"
-DNSMASQ_FILTER  = "/etc/dnsmasq.d/aegisguard-filter.conf"
-MARKER_BEGIN    = "# AegisGuard Web Filter BEGIN"
-MARKER_END      = "# AegisGuard Web Filter END"
+DNSMASQ_FILTER  = "/etc/dnsmasq.d/fguard-filter.conf"
+MARKER_BEGIN    = "# FGUARD Web Filter BEGIN"
+MARKER_END      = "# FGUARD Web Filter END"
 
 BUILTIN_CATEGORIES = {
     "Adult Content": [
@@ -82,8 +82,8 @@ def _get_blocked_domains():
 # ── dnsmasq filter (Linux primary method) ────────────────────────────────────
 
 def _write_dnsmasq_filter(domains):
-    """Write /etc/dnsmasq.d/aegisguard-filter.conf with address= entries."""
-    lines = ["# AegisGuard Web Filter — auto-generated", ""]
+    """Write /etc/dnsmasq.d/fguard-filter.conf with address= entries."""
+    lines = ["# FGUARD Web Filter — auto-generated", ""]
     for domain in sorted(domains):
         lines.append(f"address=/{domain}/0.0.0.0")
         lines.append(f"address=/{domain}/::")   # IPv6
@@ -128,7 +128,7 @@ def _write_hosts(content):
         return False, str(e)
 
 
-def _strip_aegisguard_block(content):
+def _strip_fguard_block(content):
     lines, result, inside = content.splitlines(keepends=True), [], False
     for line in lines:
         if MARKER_BEGIN in line:
@@ -144,7 +144,7 @@ def _write_hosts_filter(domains):
     current = _read_hosts()
     if current is None:
         return False, "Cannot read hosts file (permission denied)"
-    clean = _strip_aegisguard_block(current)
+    clean = _strip_fguard_block(current)
     if not clean.endswith("\n"):
         clean += "\n"
     block_lines = [f"\n{MARKER_BEGIN}\n"]
@@ -169,7 +169,7 @@ def _get_lan_interfaces():
     return list(dict.fromkeys(ifaces))  # deduplicate, preserve order
 
 
-WF_CHAIN = "AEGISGUARD_WEBFILTER"
+WF_CHAIN = "FGUARD_WEBFILTER"
 
 
 def _apply_dns_redirect():
@@ -313,7 +313,7 @@ def remove_filters():
         run(["systemctl", "restart", "dnsmasq"])
     current = _read_hosts()
     if current:
-        _write_hosts(_strip_aegisguard_block(current))
+        _write_hosts(_strip_fguard_block(current))
     database.add_log("INFO", details="Web filter removed")
     return True, "Web filter removed"
 

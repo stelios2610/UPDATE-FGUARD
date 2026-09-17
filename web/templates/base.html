@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{% block title %}{% endblock %} — FGUARD UTC</title>
+  <title>{% block title %}{% endblock %} — FGUARD</title>
   <link rel="stylesheet" href="/static/css/aegis.css">
   {% block extra_head %}{% endblock %}
 </head>
@@ -15,7 +15,7 @@
   <div class="sidebar-logo">
     <span class="shield">🛡</span>
     <div>
-      <div class="brand">FGUARD UTC</div>
+      <div class="brand">FGUARD</div>
       <div style="font-size:9px;color:#555;letter-spacing:0.5px">NETWORK SECURITY</div>
     </div>
   </div>
@@ -223,7 +223,7 @@
     {% if not is_root %}
     <div style="color:var(--warning);margin-top:3px;font-size:10px">⚠ Not Administrator</div>
     {% endif %}
-    <div style="color:#444;margin-top:5px;font-size:10px">FGUARD UTC v{{ app_version }}</div>
+    <div style="color:#444;margin-top:5px;font-size:10px">FGUARD v{{ app_version }}</div>
     <form method="POST" action="/logout" style="margin-top:8px">
       <button type="submit" style="display:block;width:100%;background:none;border:1px solid #30363d;border-radius:4px;color:#8b949e;font-size:11px;padding:4px 8px;text-align:center;cursor:pointer;transition:all 0.15s"
               onmouseover="this.style.color='#e74c3c';this.style.borderColor='#e74c3c'"
@@ -249,17 +249,17 @@
   <!-- License Banner -->
   {% if lic_status == 'expired' %}
   <div style="background:#c0392b;color:#fff;padding:9px 20px;font-size:13px;text-align:center;font-weight:500">
-    &#9888; Your FGUARD UTC license has expired. Web Filter, Application Control and GeoIP Blocking have been disabled.
+    &#9888; Your FGUARD license has expired. Web Filter, Application Control and GeoIP Blocking have been disabled.
     Please contact your provider to renew.
   </div>
   {% elif lic_status == 'expiring' %}
   <div style="background:#e67e22;color:#fff;padding:9px 20px;font-size:13px;text-align:center;font-weight:500">
-    &#9888; Your FGUARD UTC license expires in <strong>{{ lic_days }} days</strong> ({{ lic_expires }}).
+    &#9888; Your FGUARD license expires in <strong>{{ lic_days }} days</strong> ({{ lic_expires }}).
     Please contact your provider to renew.
   </div>
   {% elif lic_status in ('missing', 'invalid') %}
   <div style="background:#7f8c8d;color:#fff;padding:9px 20px;font-size:13px;text-align:center;font-weight:500">
-    &#9888; No valid FGUARD UTC license found. Please contact your provider.
+    &#9888; No valid FGUARD license found. Please contact your provider.
   </div>
   {% endif %}
 

@@ -27,7 +27,7 @@ def is_pki_initialized():
             os.path.isfile(os.path.join(PKI_DIR, "server.crt")))
 
 
-def initialize_pki(server_name="aegisguard-ssl", progress_cb=None):
+def initialize_pki(server_name="fguard-ssl", progress_cb=None):
     """Generate CA + server PKI. Called once on first setup."""
     os.makedirs(PKI_DIR, exist_ok=True)
     os.makedirs(CONFIGS_DIR, exist_ok=True)
@@ -94,7 +94,7 @@ def write_server_config():
     _dns_domain = cfg.get("dns_domain", "").strip()
     _push_domain = f'push "dhcp-option DOMAIN {_dns_domain}"\n' if _dns_domain else ""
 
-    conf = f"""# FGUARD UTC SSL VPN Server
+    conf = f"""# FGUARD SSL VPN Server
 # Generated: {datetime.now().isoformat()}
 
 port {port}
@@ -121,7 +121,7 @@ auth {auth}
 tls-version-min {cfg.get('tls_version','1.2')}
 # User auth via script
 script-security 2
-auth-user-pass-verify /etc/aegisguard/vpn-auth.sh via-file
+auth-user-pass-verify /etc/fguard/vpn-auth.sh via-file
 username-as-common-name
 verify-client-cert optional
 
@@ -134,8 +134,8 @@ persist-key
 persist-tun
 user nobody
 group nogroup
-status /var/log/aegisguard-ssl-vpn-status.log
-log-append /var/log/aegisguard-ssl-vpn.log
+status /var/log/fguard-ssl-vpn-status.log
+log-append /var/log/fguard-ssl-vpn.log
 verb 3
 
 {cfg.get('extra_opts','') or ''}
@@ -169,18 +169,18 @@ def reload_systemd_server():
 def write_auth_script():
     """Write the OpenVPN user auth script."""
     script = """#!/bin/bash
-# FGUARD UTC SSL VPN auth script
+# FGUARD SSL VPN auth script
 # Called by OpenVPN via-file: $1 = temp file with username/password
 
-/usr/bin/python3 /etc/aegisguard/vpn_auth_check.py "$1"
+/usr/bin/python3 /etc/fguard/vpn_auth_check.py "$1"
 """
-    auth_script = "/etc/aegisguard/vpn-auth.sh"
-    auth_check = "/etc/aegisguard/vpn_auth_check.py"
+    auth_script = "/etc/fguard/vpn-auth.sh"
+    auth_check = "/etc/fguard/vpn_auth_check.py"
 
     auth_check_code = """#!/usr/bin/env python3
 import sys, sqlite3, hashlib, hmac
 
-DB = '/opt/aegisguard/firewall.db'
+DB = '/opt/fguard/firewall.db' if __import__('os').path.isfile('/opt/fguard/firewall.db') else '/opt/aegisguard/firewall.db'
 
 try:
     import bcrypt as _bcrypt
@@ -218,14 +218,22 @@ except Exception:
     sys.exit(1)
 """
     try:
-        os.makedirs("/etc/aegisguard", exist_ok=True)
+        os.makedirs("/etc/fguard", exist_ok=True)
         with open(auth_script, "w") as f:
             f.write(script)
         with open(auth_check, "w") as f:
             f.write(auth_check_code)
         os.chmod(auth_script, 0o755)
         os.chmod(auth_check, 0o755)
-        os.chmod("/etc/aegisguard", 0o755)
+        os.chmod("/etc/fguard", 0o755)
+        if os.path.isdir("/etc/aegisguard"):
+            for src, name in ((auth_script, "vpn-auth.sh"), (auth_check, "vpn_auth_check.py")):
+                dst = os.path.join("/etc/aegisguard", name)
+                try:
+                    shutil.copy2(src, dst)
+                    os.chmod(dst, 0o755)
+                except Exception:
+                    pass
         return True, "Auth scripts written"
     except Exception as e:
         return False, str(e)
@@ -377,6 +385,11 @@ def apply_vpn_internet_nat():
     run(["iptables", "-I", "FORWARD", "2", "-i", wan_if, "-o", "tun0",
          "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"])
     run(["iptables", "-t", "nat", "-A", "POSTROUTING", "-s", vpn_net, "-o", wan_if, "-j", "MASQUERADE"])
+    try:
+        from core.bov_manager import pin_ipsec_nat_rules
+        pin_ipsec_nat_rules()
+    except Exception:
+        pass
     run(["netfilter-persistent", "save"])
 
 
@@ -402,15 +415,33 @@ def _vpn_cidr() -> str:
 
 
 def apply_push_route_rules(network: str, netmask: str):
-    """Add iptables FORWARD + MASQUERADE rules for a new push route."""
+    """Add iptables FORWARD + NAT rules for a new push route.
+
+    IPsec peer LANs must SNAT to the local LAN IP (not MASQUERADE to WAN)
+    or xfrm selectors will not match.
+    """
     if not IS_LINUX:
         return
     cidr = f"{network}/{_netmask_to_cidr(netmask)}"
     vpn_net = _vpn_cidr()
     run(["iptables", "-I", "FORWARD", "-i", "tun0", "-d", cidr, "-j", "ACCEPT"])
     run(["iptables", "-I", "FORWARD", "-s", cidr, "-o", "tun0", "-j", "ACCEPT"])
-    run(["iptables", "-t", "nat", "-I", "POSTROUTING",
-         "-s", vpn_net, "-d", cidr, "-j", "MASQUERADE"])
+    ipsec_peer = False
+    try:
+        for t in database.get_bov_tunnels():
+            if t.get("enabled", 1) and (t.get("remote_subnets") or "").strip() == cidr:
+                ipsec_peer = True
+                break
+    except Exception:
+        ipsec_peer = False
+    if not ipsec_peer:
+        run(["iptables", "-t", "nat", "-I", "POSTROUTING",
+             "-s", vpn_net, "-d", cidr, "-j", "MASQUERADE"])
+    try:
+        from core.bov_manager import pin_ipsec_nat_rules
+        pin_ipsec_nat_rules()
+    except Exception:
+        pass
     run(["netfilter-persistent", "save"])
 
 
@@ -424,6 +455,10 @@ def remove_push_route_rules(network: str, netmask: str):
     run(["iptables", "-D", "FORWARD", "-s", cidr, "-o", "tun0", "-j", "ACCEPT"])
     run(["iptables", "-t", "nat", "-D", "POSTROUTING",
          "-s", vpn_net, "-d", cidr, "-j", "MASQUERADE"])
+    lan_ip = _get_lan_ip()
+    if lan_ip:
+        run(["iptables", "-t", "nat", "-D", "POSTROUTING",
+             "-s", vpn_net, "-d", cidr, "-j", "SNAT", "--to-source", lan_ip])
     run(["netfilter-persistent", "save"])
 
 
@@ -443,7 +478,7 @@ def get_connected_clients():
     Supports both status-version 2 (systemd service) and version 1 (direct start)."""
     candidates = [
         "/run/openvpn-server/status-server.log",  # openvpn-server@server.service
-        "/var/log/aegisguard-ssl-vpn-status.log",  # FGUARD direct start
+        "/var/log/fguard-ssl-vpn-status.log",  # FGUARD direct start
     ]
     status_file = next((p for p in candidates if os.path.isfile(p)), None)
     clients = []
@@ -532,7 +567,7 @@ def generate_user_config(vpn_user, server_ip="auto"):
     def _block(tag, content):
         return f"<{tag}>\n{content.strip()}\n</{tag}>\n" if content else ""
 
-    conf = f"""# FGUARD UTC SSL VPN - Client Config
+    conf = f"""# FGUARD SSL VPN - Client Config
 # User: {vpn_user['username']}
 # Server: {server_ip}:{port}
 # Generated: {datetime.now().isoformat()}

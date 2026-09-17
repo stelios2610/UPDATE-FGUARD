@@ -7,7 +7,7 @@
 
 {% if not is_root %}
 <div class="alert alert-warning" style="margin-bottom:16px">
-  FGUARD UTC is not running as administrator. Some settings may not take effect without elevated privileges.
+  FGUARD is not running as administrator. Some settings may not take effect without elevated privileges.
 </div>
 {% endif %}
 
@@ -38,7 +38,7 @@
       <div class="form-group">
         <label class="form-label">Hostname</label>
         <input class="form-control font-mono" id="set-hostname"
-               value="{{ settings.get('hostname', '') }}" placeholder="e.g. aegisguard-fw01">
+               value="{{ settings.get('hostname', '') }}" placeholder="e.g. fguard-fw01">
       </div>
       <div class="form-group">
         <label class="form-label">Timezone</label>
@@ -330,7 +330,7 @@
     <div class="form-group">
       <label class="form-label">Alert From Address</label>
       <input class="form-control" id="smtp-from"
-             value="{{ settings.get('smtp_from', '') }}" placeholder="e.g. aegisguard@company.com">
+             value="{{ settings.get('smtp_from', '') }}" placeholder="e.g. fguard@company.com">
     </div>
     <div class="form-group">
       <label class="form-label">Send Alerts For</label>
@@ -416,7 +416,7 @@
         </div>
       </div>
       <p class="text-muted" style="font-size:13px;line-height:1.6">
-        Save this file offline. When you replace the box, restore it from the same page on the new FGUARD UTC.
+        Save this file offline. When you replace the box, restore it from the same page on the new FGUARD.
       </p>
       <button class="btn btn-primary" onclick="downloadBackup()">Download configuration</button>
     </div>
@@ -489,13 +489,13 @@
     <div class="card">
       <div class="card-header">
         <div>
-          <div class="card-title">FGUARD UTC</div>
+          <div class="card-title">FGUARD</div>
           <div class="card-sub">Next-Generation Firewall Platform</div>
         </div>
         <span class="badge badge-allow">v1.0.0</span>
       </div>
       <div style="font-size:13px;line-height:1.8;color:var(--text-muted);padding:8px 0">
-        FGUARD UTC is a comprehensive network security platform providing enterprise-grade firewall capabilities
+        FGUARD is a comprehensive network security platform providing enterprise-grade firewall capabilities
         with an intuitive web-based management interface. Built on FastAPI and designed for reliability and
         performance across Windows and Linux environments.
       </div>
@@ -678,7 +678,7 @@
       <div class="form-group">
         <label class="form-label">License Key</label>
         <textarea id="lic-key-input" class="form-control font-mono"
-                  rows="6" placeholder="Paste your FGUARD UTC license key here..."
+                  rows="6" placeholder="Paste your FGUARD license key here..."
                   style="font-size:11px;resize:vertical"></textarea>
       </div>
       <button class="btn btn-primary" style="width:100%" onclick="activateLicense()">

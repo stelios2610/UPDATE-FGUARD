@@ -237,7 +237,7 @@ async function enableMFA(id, username) {
     const r = await POST(`/api/auth/users/${id}/mfa/enable`);
     mfaUserId = id;
     document.getElementById('mfa-username-display').textContent = username;
-    document.getElementById('mfa-uri-display').value = r.otp_uri || ('otpauth://totp/FGUARD UTC:' + username + '?secret=' + (r.secret || 'UNKNOWN') + '&issuer=FGUARD UTC');
+    document.getElementById('mfa-uri-display').value = r.otp_uri || ('otpauth://totp/FGUARD:' + username + '?secret=' + (r.secret || 'UNKNOWN') + '&issuer=FGUARD');
     document.getElementById('mfa-qr-section').style.display = '';
     document.getElementById('mfa-qr-section').scrollIntoView({ behavior: 'smooth' });
     toast('MFA enabled — scan the QR code to activate', 'info');

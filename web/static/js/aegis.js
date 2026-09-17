@@ -1,4 +1,4 @@
-// AegisGuard Web UI - common JS
+// FGUARD Web UI - common JS
 
 // ── Toast notifications ────────────────────────────────────────────────────
 

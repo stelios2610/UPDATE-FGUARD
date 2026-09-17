@@ -189,7 +189,7 @@ def apply_ipsec_tunnels():
         os.makedirs(SWANCTL_CONF_DIR, exist_ok=True)
         for t in ipsec_tunnels:
             name = t["name"].replace(" ", "_")
-            conf_path = os.path.join(SWANCTL_CONF_DIR, f"aegisguard-{name}.conf")
+            conf_path = os.path.join(SWANCTL_CONF_DIR, f"fguard-{name}.conf")
             with open(conf_path, "w") as f:
                 f.write(_write_swanctl_conf(t))
             os.chmod(conf_path, 0o600)
@@ -236,7 +236,7 @@ def delete_ipsec_tunnel(tunnel):
     """Terminate SA, delete swanctl conf file, reload swanctl — no orphaned config."""
     name = tunnel["name"].replace(" ", "_")
     run(["swanctl", "--terminate", "--ike", name], timeout=15)
-    conf_path = os.path.join(SWANCTL_CONF_DIR, f"aegisguard-{name}.conf")
+    conf_path = os.path.join(SWANCTL_CONF_DIR, f"fguard-{name}.conf")
     if os.path.isfile(conf_path):
         os.remove(conf_path)
     run(["swanctl", "--load-all"])
@@ -256,7 +256,7 @@ def get_ipsec_status():
 
 def _write_wireguard_site_config(tunnel):
     """Generate WireGuard .conf for site-to-site tunnel."""
-    conf = f"""# FGUARD UTC BOV WireGuard - {tunnel['name']}
+    conf = f"""# FGUARD BOV WireGuard - {tunnel['name']}
 [Interface]
 PrivateKey = {tunnel.get('wg_private_key','')}
 ListenPort = {tunnel.get('wg_port',51820)}
@@ -333,7 +333,7 @@ def _write_ssl_site_config(tunnel, mode="server"):
     def _block(tag, content):
         return f"<{tag}>\n{content.strip()}\n</{tag}>\n" if content else ""
 
-    conf = f"""# FGUARD UTC BOV SSL - {tunnel['name']} ({mode})
+    conf = f"""# FGUARD BOV SSL - {tunnel['name']} ({mode})
 # Generated: {datetime.now().isoformat()}
 
 {'dev tun' if is_server else 'dev tun'}
@@ -500,7 +500,7 @@ def restore_tunnels_on_boot():
         wrote = False
         for t in ipsec_tunnels:
             name = t["name"].replace(" ", "_")
-            conf_path = os.path.join(SWANCTL_CONF_DIR, f"aegisguard-{name}.conf")
+            conf_path = os.path.join(SWANCTL_CONF_DIR, f"fguard-{name}.conf")
             if not os.path.isfile(conf_path):
                 with open(conf_path, "w") as f:
                     f.write(_write_swanctl_conf(t))
@@ -535,7 +535,7 @@ def export_peer_config(tunnel):
 
     if t == "WireGuard":
         # Generate reverse config for remote peer
-        conf = f"""# FGUARD UTC BOV - Remote peer config for '{name}'
+        conf = f"""# FGUARD BOV - Remote peer config for '{name}'
 # Paste this on the REMOTE WireGuard device
 
 [Interface]

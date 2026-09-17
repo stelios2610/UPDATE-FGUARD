@@ -7,7 +7,7 @@ from core.platform import IS_LINUX, run
 
 # ─── Predefined app blocks (gateway-level: DNS + port blocking) ───────────────
 
-APPBLOCK_DNSMASQ = "/etc/dnsmasq.d/aegisguard-appblock.conf"
+APPBLOCK_DNSMASQ = "/etc/dnsmasq.d/fguard-appblock.conf"
 
 PREDEFINED_APPS = {
     "AnyDesk": {
@@ -81,14 +81,14 @@ PREDEFINED_APPS = {
 
 def _appblock_comment(app_name):
     safe = app_name.replace(" ", "_")
-    return f"aegisguard_appblock_{safe}"
+    return f"fguard_appblock_{safe}"
 
 
 def _write_appblock_dnsmasq():
-    """Rewrite /etc/dnsmasq.d/aegisguard-appblock.conf with all enabled app blocks."""
+    """Rewrite /etc/dnsmasq.d/fguard-appblock.conf with all enabled app blocks."""
     if not IS_LINUX:
         return
-    lines = ["# AegisGuard App Block — auto-generated", ""]
+    lines = ["# FGUARD App Block — auto-generated", ""]
     for name, cfg in PREDEFINED_APPS.items():
         key = f"appblock_{name}"
         if database.get_setting(key) == "1":
@@ -165,7 +165,7 @@ def get_app_block_status():
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _rule_name(app_rule):
-    return f"AegisGuard-App-{app_rule['id']}-{app_rule['name']}"
+    return f"FGUARD-App-{app_rule['id']}-{app_rule['name']}"
 
 
 def _get_uids_for_exe(exe_path):
@@ -186,7 +186,7 @@ def _get_uids_for_exe(exe_path):
 # ─── Linux backend (iptables owner match) ────────────────────────────────────
 
 def _ipt_comment(app_rule):
-    return f"aegisguard_app_{app_rule['id']}"
+    return f"fguard_app_{app_rule['id']}"
 
 
 def _remove_app_rule_linux(app_rule):
@@ -345,11 +345,11 @@ def block_process_now(pid):
             for chain in ("INPUT", "OUTPUT"):
                 run(["iptables", "-I", chain, "1",
                      "-m", "owner", "--uid-owner", str(uid),
-                     "-m", "comment", "--comment", f"aegisguard_block_pid_{pid}",
+                     "-m", "comment", "--comment", f"fguard_block_pid_{pid}",
                      "-j", "DROP"])
             return True, f"Blocked {name} (PID {pid}, UID {uid})"
 
-        tmp_name = f"AegisGuard-TempBlock-{pid}"
+        tmp_name = f"FGUARD-TempBlock-{pid}"
         _run_netsh(["delete", "rule", f"name={tmp_name}"])
         for d in ["in", "out"]:
             _run_netsh(["add", "rule", f"name={tmp_name}",

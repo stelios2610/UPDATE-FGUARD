@@ -1,4 +1,4 @@
-"""FGUARD UTC Update Manager — checks UPDATE-FGUARD repo daily, downloads and applies updates."""
+"""FGUARD Update Manager — checks UPDATE-FGUARD repo daily, downloads and applies updates."""
 import os
 import json
 import shutil
@@ -197,7 +197,7 @@ def apply_update():
         if os.path.isfile(post_update):
             try:
                 os.chmod(post_update, 0o755)
-                subprocess.run(["bash", post_update], timeout=30, check=False)
+                subprocess.run(["bash", post_update], timeout=90, check=False)
             except Exception:
                 pass
 
@@ -212,10 +212,13 @@ def apply_update():
 def _restart_service():
     import time
     time.sleep(2)
-    try:
-        subprocess.run(["systemctl", "restart", "aegisguard"], timeout=30)
-    except Exception:
-        pass
+    for unit in ("aegisguard", "fguard"):
+        try:
+            r = subprocess.run(["systemctl", "restart", unit], timeout=30)
+            if r.returncode == 0:
+                return
+        except Exception:
+            pass
 
 
 # ── Daily background checker ───────────────────────────────────────────────────

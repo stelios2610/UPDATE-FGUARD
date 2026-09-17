@@ -4,6 +4,109 @@
 
 BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
+# ── v1.0.19 branding: names change to fguard, live boxes keep working ─────────
+# Real install dir is BASE_DIR (today /opt/aegisguard). Symlink /opt/fguard to it.
+# Never remove aegisguard.service: that is what the running box already uses.
+if [ -d /opt/aegisguard ] && [ ! -e /opt/fguard ]; then
+    ln -sfn /opt/aegisguard /opt/fguard
+fi
+if [ -d /opt/fguard ] && [ ! -e /opt/aegisguard ]; then
+    ln -sfn /opt/fguard /opt/aegisguard
+fi
+if [ "$BASE_DIR" != "/opt/fguard" ] && [ ! -e /opt/fguard ]; then
+    ln -sfn "$BASE_DIR" /opt/fguard
+fi
+
+mkdir -p /etc/fguard
+if [ -d /etc/aegisguard ]; then
+    cp -an /etc/aegisguard/. /etc/fguard/ 2>/dev/null || true
+fi
+if [ -f "${BASE_DIR}/build/server-configs/vpn-auth.sh" ]; then
+    install -m 755 "${BASE_DIR}/build/server-configs/vpn-auth.sh" /etc/fguard/vpn-auth.sh
+    install -m 755 "${BASE_DIR}/build/server-configs/vpn_auth_check.py" /etc/fguard/vpn_auth_check.py
+    if [ -d /etc/aegisguard ]; then
+        install -m 755 "${BASE_DIR}/build/server-configs/vpn-auth.sh" /etc/aegisguard/vpn-auth.sh
+        install -m 755 "${BASE_DIR}/build/server-configs/vpn_auth_check.py" /etc/aegisguard/vpn_auth_check.py
+    fi
+fi
+
+if [ -f /etc/nginx/ssl/aegisguard.crt ] && [ ! -f /etc/nginx/ssl/fguard.crt ]; then
+    cp -a /etc/nginx/ssl/aegisguard.crt /etc/nginx/ssl/fguard.crt 2>/dev/null || true
+    cp -a /etc/nginx/ssl/aegisguard.key /etc/nginx/ssl/fguard.key 2>/dev/null || true
+fi
+# Do not add a second :8080 vhost if the old aegisguard site is already enabled.
+if [ ! -e /etc/nginx/sites-enabled/aegisguard ] && [ -f "${BASE_DIR}/build/server-configs/nginx-fguard.conf" ]; then
+    cp "${BASE_DIR}/build/server-configs/nginx-fguard.conf" /etc/nginx/sites-available/fguard
+    ln -sf /etc/nginx/sites-available/fguard /etc/nginx/sites-enabled/fguard
+    nginx -t >/dev/null 2>&1 && systemctl reload nginx 2>/dev/null || true
+fi
+
+if [ -f /etc/netplan/50-aegisguard.yaml ] && [ ! -f /etc/netplan/50-fguard.yaml ]; then
+    cp -a /etc/netplan/50-aegisguard.yaml /etc/netplan/50-fguard.yaml
+    rm -f /etc/netplan/50-aegisguard.yaml
+fi
+if [ -f /etc/dnsmasq.d/aegisguard.conf ] && [ ! -f /etc/dnsmasq.d/fguard.conf ]; then
+    cp -a /etc/dnsmasq.d/aegisguard.conf /etc/dnsmasq.d/fguard.conf
+    rm -f /etc/dnsmasq.d/aegisguard.conf
+fi
+if [ -f /etc/dnsmasq.d/aegisguard-filter.conf ] && [ ! -f /etc/dnsmasq.d/fguard-filter.conf ]; then
+    cp -a /etc/dnsmasq.d/aegisguard-filter.conf /etc/dnsmasq.d/fguard-filter.conf
+    rm -f /etc/dnsmasq.d/aegisguard-filter.conf
+fi
+if [ -f /etc/dnsmasq.d/aegisguard-appblock.conf ] && [ ! -f /etc/dnsmasq.d/fguard-appblock.conf ]; then
+    cp -a /etc/dnsmasq.d/aegisguard-appblock.conf /etc/dnsmasq.d/fguard-appblock.conf
+    rm -f /etc/dnsmasq.d/aegisguard-appblock.conf
+fi
+
+rename_chain() {
+    local old="$1" new="$2" bin="$3"
+    $bin -L "$old" >/dev/null 2>&1 || return 0
+    $bin -L "$new" >/dev/null 2>&1 && return 0
+    $bin -E "$old" "$new" 2>/dev/null || true
+}
+rename_chain AEGISGUARD_INPUT FGUARD_INPUT iptables
+rename_chain AEGISGUARD_FORWARD FGUARD_FORWARD iptables
+rename_chain AEGISGUARD_OUTPUT FGUARD_OUTPUT iptables
+rename_chain AEGISGUARD_WEBFILTER FGUARD_WEBFILTER iptables
+rename_chain AEGISGUARD_INPUT6 FGUARD_INPUT6 ip6tables
+rename_chain AEGISGUARD_INPUT6 FGUARD_INPUT6 iptables
+
+# Point both unit names at the real install dir. Do not drop aegisguard.service.
+FGUARD_UNIT=$(cat <<EOF
+[Unit]
+Description=FGUARD Network Security Suite
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${BASE_DIR}
+ExecStart=${BASE_DIR}/venv/bin/python -m uvicorn web.api:app --host 127.0.0.1 --port 8888 --workers 1
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fguard
+NoNewPrivileges=false
+PrivateTmp=false
+
+[Install]
+WantedBy=multi-user.target
+EOF
+)
+printf '%s\n' "$FGUARD_UNIT" > /etc/systemd/system/fguard.service
+printf '%s\n' "$FGUARD_UNIT" > /etc/systemd/system/aegisguard.service
+systemctl daemon-reload
+# Keep the unit that is already enabled; do not enable a second copy.
+if systemctl is-enabled aegisguard >/dev/null 2>&1; then
+    systemctl enable aegisguard.service 2>/dev/null || true
+elif systemctl is-enabled fguard >/dev/null 2>&1; then
+    systemctl enable fguard.service 2>/dev/null || true
+else
+    systemctl enable aegisguard.service 2>/dev/null || systemctl enable fguard.service 2>/dev/null || true
+fi
+
 # ── Ensure LAN→WAN MASQUERADE exists ─────────────────────────────────────────
 # Added in v1.0.13: nft/iptables restore can drop LAN NAT after reboot.
 WAN_IF=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
@@ -25,6 +128,12 @@ if ip route show table 220 2>/dev/null | grep -q .; then
 fi
 
 # ── Drop invalid IPv4 dhcp-range relay that crashes dnsmasq 2.92 ─────────────
+if [ -f /etc/dnsmasq.d/fguard.conf ]; then
+    if grep -q 'dhcp-range=.*,relay,' /etc/dnsmasq.d/fguard.conf 2>/dev/null; then
+        sed -i '/dhcp-range=.*,relay,/d' /etc/dnsmasq.d/fguard.conf
+        systemctl try-restart dnsmasq 2>/dev/null || true
+    fi
+fi
 if [ -f /etc/dnsmasq.d/aegisguard.conf ]; then
     if grep -q 'dhcp-range=.*,relay,' /etc/dnsmasq.d/aegisguard.conf 2>/dev/null; then
         sed -i '/dhcp-range=.*,relay,/d' /etc/dnsmasq.d/aegisguard.conf

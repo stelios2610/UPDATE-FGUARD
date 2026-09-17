@@ -1,4 +1,4 @@
-"""FGUARD UTC Web API - Complete FastAPI backend."""
+"""FGUARD Web API - Complete FastAPI backend."""
 import sys, os, json as _json
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -46,7 +46,7 @@ reputation.init()
 multiwan_manager.start()
 ha_manager.start_sync()
 
-# Ensure AEGISGUARD iptables chains exist at startup with safe base rules
+# Ensure FGUARD iptables chains exist at startup with safe base rules
 from core.platform import IS_LINUX as _IS_LINUX
 if _IS_LINUX:
     try:
@@ -191,7 +191,7 @@ def _license_enforcer():
 if _IS_LINUX:
     _threading.Thread(target=_license_enforcer, daemon=True).start()
 
-app = FastAPI(title="AegisGuard", version="1.0.0", docs_url=None,
+app = FastAPI(title="FGUARD", version="1.0.0", docs_url=None,
              openapi_url=None)  # disable openapi exposure
 
 # ── Security headers middleware ───────────────────────────────────────────────
@@ -259,7 +259,7 @@ def _require_license(feature: str = "This feature"):
     if IS_LINUX and not license_manager.is_licensed():
         raise HTTPException(
             status_code=403,
-            detail=f"{feature} requires an active FGUARD UTC license. Please contact your provider to renew."
+            detail=f"{feature} requires an active FGUARD license. Please contact your provider to renew."
         )
 
 
@@ -1076,21 +1076,21 @@ async def api_ovpn_server_stop():
 @app.post("/api/vpn/openvpn/pki/generate")
 async def api_openvpn_pki(request: Request):
     data = await request.json()
-    output_dir = data.get("output_dir", "/etc/aegisguard/pki")
+    output_dir = data.get("output_dir", "/etc/fguard/pki")
     result = vpn_keygen.generate_openvpn_pki(output_dir,
                                               server_name=data.get("server_name","server"),
                                               client_name=data.get("client_name","client"))
     return result
 
 @app.get("/api/vpn/openvpn/server-config")
-async def api_ovpn_server_cfg(pki_dir: str = "/etc/aegisguard/pki",
+async def api_ovpn_server_cfg(pki_dir: str = "/etc/fguard/pki",
                                server_ip: str = "0.0.0.0", port: int = 1194):
     conf = vpn_keygen.generate_openvpn_server_config(pki_dir, port=port)
     return StreamingResponse(io.StringIO(conf), media_type="text/plain",
                              headers={"Content-Disposition": "attachment; filename=server.conf"})
 
 @app.get("/api/vpn/openvpn/client-config")
-async def api_ovpn_client_cfg(server_ip: str = "", pki_dir: str = "/etc/aegisguard/pki", port: int = 1194):
+async def api_ovpn_client_cfg(server_ip: str = "", pki_dir: str = "/etc/fguard/pki", port: int = 1194):
     # Use saved public IP if not provided
     if not server_ip:
         server_ip = database.get_setting("openvpn_public_ip", "")
@@ -1098,7 +1098,7 @@ async def api_ovpn_client_cfg(server_ip: str = "", pki_dir: str = "/etc/aegisgua
         raise HTTPException(400, "Public IP not set. Go to VPN → OpenVPN Server → set Public IP first.")
     conf = vpn_keygen.generate_openvpn_client_config(server_ip, pki_dir, port=port)
     return StreamingResponse(io.StringIO(conf), media_type="text/plain",
-                             headers={"Content-Disposition": "attachment; filename=aegisguard-client.ovpn"})
+                             headers={"Content-Disposition": "attachment; filename=fguard-client.ovpn"})
 
 @app.get("/api/vpn/wireguard/generate-config")
 async def api_wg_config(endpoint: str, server_pubkey: str, client_privkey: str,
@@ -1507,7 +1507,7 @@ async def api_export_cert(cid: int):
 @app.post("/api/certificates/generate-self-signed")
 async def api_gen_cert(request: Request):
     data = await request.json()
-    cn = data.get("cn", "AegisGuard")
+    cn = data.get("cn", "FGUARD")
     days = data.get("days", 3650)
     from core.platform import run
     import tempfile, os
@@ -1515,7 +1515,7 @@ async def api_gen_cert(request: Request):
     cert_f = tempfile.mktemp(suffix=".crt")
     ok, _, err = run(["openssl", "req", "-x509", "-newkey", "rsa:2048",
                       "-keyout", key_f, "-out", cert_f, "-days", str(days),
-                      "-nodes", "-subj", f"/CN={cn}/O=AegisGuard/C=GR"])
+                      "-nodes", "-subj", f"/CN={cn}/O=FGUARD/C=GR"])
     if not ok:
         return {"status":"error","message":err}
     with open(cert_f) as f: cert_pem = f.read()
@@ -1640,7 +1640,7 @@ async def api_test_log_server(sid: int):
                 pass
         else:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.sendto(b"<14>AegisGuard test message", (srv["host"], srv["port"]))
+                s.sendto(b"<14>FGUARD test message", (srv["host"], srv["port"]))
         return {"status": "ok", "message": f"Connected to {srv['host']}:{srv['port']}"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -1704,8 +1704,8 @@ async def api_test_email():
                 s.starttls()
             if user:
                 s.login(user, pw)
-            s.sendmail(user or "aegisguard@localhost", to,
-                       f"Subject: AegisGuard Test\r\n\r\nTest email from AegisGuard.")
+            s.sendmail(user or "fguard@localhost", to,
+                       f"Subject: FGUARD Test\r\n\r\nTest email from FGUARD.")
         return {"status": "ok", "message": f"Test email sent to {to}"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -1787,7 +1787,7 @@ async def api_ssl_server_conf():
     except Exception:
         content = "# Config file not yet generated. Run 'Start Server' first."
     return StreamingResponse(io.StringIO(content), media_type="text/plain",
-                             headers={"Content-Disposition": "attachment; filename=aegisguard-ssl-vpn.conf"})
+                             headers={"Content-Disposition": "attachment; filename=fguard-ssl-vpn.conf"})
 
 @app.get("/api/vpn/ssl/routes")
 async def api_get_ssl_routes():
@@ -2114,8 +2114,8 @@ async def api_license_save(request: Request):
     except Exception:
         raise HTTPException(400, "Invalid license key format")
     try:
-        run(["mkdir", "-p", "/etc/aegisguard"])
-        ok, out, err = run(["bash", "-c", f'printf "%s" "{key}" > /etc/aegisguard/license.key'])
+        run(["mkdir", "-p", "/etc/fguard"])
+        ok, out, err = run(["bash", "-c", f'printf "%s" "{key}" > /etc/fguard/license.key'])
         if not ok:
             raise HTTPException(500, f"Could not write license file: {err}")
     except HTTPException:
@@ -2141,7 +2141,7 @@ async def api_license_save(request: Request):
 
 @app.delete("/api/license")
 async def api_license_remove():
-    run(["rm", "-f", "/etc/aegisguard/license.key"])
+    run(["rm", "-f", "/etc/fguard/license.key"])
     license_manager.validate_license(force=True)
     return {"status": "ok", "message": "License removed"}
 

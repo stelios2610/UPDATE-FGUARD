@@ -1,11 +1,12 @@
-"""FGUARD UTC License Manager — validates license key on the deployed appliance."""
+"""FGUARD License Manager — validates license key on the deployed appliance."""
 import hashlib
 import json
 import base64
 import subprocess
 from datetime import datetime
 
-LICENSE_FILE = "/etc/aegisguard/license.key"
+LICENSE_FILE = "/etc/fguard/license.key"
+LICENSE_FILE_LEGACY = "/etc/aegisguard/license.key"
 # Must match the SECRET_KEY in generate_license.py — keep private, never commit the real value
 SECRET_KEY = "3a6e515a424558f4fae7173cf9b250ef2443d2783d8ea277b9e106b8cea15998"
 
@@ -48,13 +49,19 @@ def validate_license(force=False):
 
     empty = {"days_remaining": 0, "customer": "", "expires": "", "issued": ""}
 
-    try:
-        with open(LICENSE_FILE, "r") as f:
-            license_key = f.read().strip()
-    except FileNotFoundError:
+    license_key = ""
+    for path in (LICENSE_FILE, LICENSE_FILE_LEGACY):
+        try:
+            with open(path, "r") as f:
+                license_key = f.read().strip()
+            if license_key:
+                break
+        except FileNotFoundError:
+            continue
+        except Exception:
+            return _set("invalid", empty)
+    if not license_key:
         return _set("missing", empty)
-    except Exception:
-        return _set("invalid", empty)
 
     try:
         data = json.loads(base64.b64decode(license_key).decode())

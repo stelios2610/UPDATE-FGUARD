@@ -2,7 +2,7 @@
 
 Reads blocked_countries from DB, builds a whitelist ipset of allowed
 country CIDRs, and DROPs WAN traffic from everywhere else in
-AEGISGUARD_INPUT (including VPN ports). Private WAN ranges (Cosmote LAN)
+FGUARD_INPUT (including VPN ports). Private WAN ranges (Cosmote LAN)
 are exempt so the firewall stays reachable on 192.168.100.0/24.
 """
 import os
@@ -15,7 +15,7 @@ from core.platform import IS_LINUX, run
 
 IPSET_NAME   = "geo_allowed"
 IPSET_SAVE   = "/etc/ipset.d/geo_allowed.ipset"
-CHAIN        = "AEGISGUARD_INPUT"
+CHAIN        = "FGUARD_INPUT"
 WAN_IFACE    = None          # auto-detected from DB
 COMMENT_TAG  = "aegis_geoblock"
 
@@ -145,7 +145,7 @@ def apply_geoblock():
     os.makedirs("/etc/ipset.d", exist_ok=True)
     subprocess.run("ipset save %s > %s" % (IPSET_NAME, IPSET_SAVE), shell=True)
 
-    # Rebuild AEGISGUARD_INPUT chain with geoblock
+    # Rebuild FGUARD_INPUT chain with geoblock
     _apply_chain_rules(wan)
 
     # Save iptables rules
@@ -160,7 +160,7 @@ def apply_geoblock():
 
 
 def _apply_chain_rules(wan):
-    """Rebuild AEGISGUARD_INPUT with proper geoblock rules."""
+    """Rebuild FGUARD_INPUT with proper geoblock rules."""
     # Flush chain
     subprocess.run("iptables -F %s" % CHAIN, shell=True)
 
@@ -204,7 +204,7 @@ def _apply_chain_rules(wan):
 
     _ensure_input_jump()
     _apply_ipv6_wan_drop(wan)
-    print("AEGISGUARD_INPUT chain rebuilt with geoblock")
+    print("FGUARD_INPUT chain rebuilt with geoblock")
 
 
 def _s2s_peer_ips():
@@ -228,7 +228,7 @@ def _s2s_peer_ips():
 
 def _apply_ipv6_wan_drop(wan):
     """IPv6 had policy ACCEPT and no GeoIP — scanners hit [::]:22."""
-    chain = "AEGISGUARD_INPUT6"
+    chain = "FGUARD_INPUT6"
     subprocess.run("ip6tables -N %s 2>/dev/null" % chain, shell=True)
     subprocess.run("ip6tables -F %s" % chain, shell=True)
     subprocess.run("ip6tables -A %s -m state --state ESTABLISHED,RELATED -j ACCEPT" % chain, shell=True)
@@ -313,7 +313,7 @@ def _install_persistence():
     # 1. ipset restore service — runs BEFORE netfilter-persistent and chain rebuild
     ipset_svc = """\
 [Unit]
-Description=FGUARD UTC GeoBlock ipset restore
+Description=FGUARD GeoBlock ipset restore
 Before=netfilter-persistent.service fguard-geoblock-rules.service
 After=network.target
 DefaultDependencies=no
@@ -326,16 +326,16 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 """
-    with open("/etc/systemd/system/aegisguard-geoblock.service", "w") as f:
+    with open("/etc/systemd/system/fguard-geoblock.service", "w") as f:
         f.write(ipset_svc)
 
-    # 2. iptables chain rebuild script — writes AEGISGUARD_INPUT rules after ipset is ready
+    # 2. iptables chain rebuild script — writes FGUARD_INPUT rules after ipset is ready
     wan = _get_wan_iface()
     rules_script = """\
 #!/bin/bash
-# FGUARD UTC — Rebuild AEGISGUARD_INPUT geoblock rules on boot
+# FGUARD — Rebuild FGUARD_INPUT geoblock rules on boot
 WAN={wan}
-CHAIN=AEGISGUARD_INPUT
+CHAIN=FGUARD_INPUT
 IPSET=geo_allowed
 
 if ! ipset list $IPSET -name &>/dev/null; then
@@ -355,7 +355,7 @@ iptables -A $CHAIN -i $WAN -m set --match-set $IPSET src -j ACCEPT
 iptables -A $CHAIN -i $WAN -j DROP
 iptables -D INPUT -j $CHAIN 2>/dev/null
 iptables -I INPUT 1 -j $CHAIN
-echo "fguard-geoblock-rules: AEGISGUARD_INPUT rebuilt (wan=$WAN, ipset=$IPSET)" | systemd-cat -t fguard
+echo "fguard-geoblock-rules: FGUARD_INPUT rebuilt (wan=$WAN, ipset=$IPSET)" | systemd-cat -t fguard
 """.format(wan=wan)
 
     with open("/usr/local/bin/fguard-geoblock-rules.sh", "w") as f:
@@ -365,14 +365,14 @@ echo "fguard-geoblock-rules: AEGISGUARD_INPUT rebuilt (wan=$WAN, ipset=$IPSET)" 
     # 3. chain rebuild service — runs AFTER ipset restore and netfilter-persistent
     chain_svc = """\
 [Unit]
-Description=FGUARD UTC GeoBlock iptables chain rebuild
-After=aegisguard-geoblock.service netfilter-persistent.service network.target
-Requires=aegisguard-geoblock.service
+Description=FGUARD GeoBlock iptables chain rebuild
+After=fguard-geoblock.service netfilter-persistent.service network.target
+Requires=fguard-geoblock.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/opt/aegisguard
-Environment=PYTHONPATH=/opt/aegisguard
+WorkingDirectory=/opt/fguard
+Environment=PYTHONPATH=/opt/fguard
 ExecStart=/usr/bin/python3 -c "from core.geoblock import restore_geoblock; restore_geoblock()"
 RemainAfterExit=yes
 
@@ -384,7 +384,7 @@ WantedBy=multi-user.target
 
     subprocess.run(
         "systemctl daemon-reload && "
-        "systemctl enable aegisguard-geoblock && "
+        "systemctl enable fguard-geoblock && "
         "systemctl enable fguard-geoblock-rules",
         shell=True
     )

@@ -1,12 +1,9 @@
 {
-  "version": "1.0.18",
-  "date": "2026-09-13",
-  "product": "FGUARD UTC",
+  "version": "1.0.19",
+  "date": "2026-09-17",
+  "product": "FGUARD",
   "changelog": [
-    "Add: FortiGate-style configuration backup and restore (download/upload .conf for a replacement unit)",
-    "Add: File Filter tab (type/AV inspect on submitted files)",
-    "Fix: deleting a NIC must not wipe VLAN netplan (eth1.10 / eth1.20 stay)",
-    "Fix: wg-watchdog must not bounce unused WireGuard when IPSec is the live path",
-    "Fix: dns-watchdog must not restart dnsmasq when an external DNS probe fails"
+    "Brand: on-screen name is FGUARD (UTC removed from login and UI)",
+    "Brand: AegisGuard renamed to FGUARD; live appliances keep /opt/aegisguard, license, nginx and systemd working via compatibility links"
   ]
 }

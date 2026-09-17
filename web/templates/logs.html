@@ -205,7 +205,7 @@ function exportLogs() {
   const blob = new Blob([csv], { type: 'text/csv' });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement('a');
-  a.href = url; a.download = `aegisguard-logs-${new Date().toISOString().slice(0,10)}.csv`;
+  a.href = url; a.download = `fguard-logs-${new Date().toISOString().slice(0,10)}.csv`;
   document.body.appendChild(a); a.click();
   document.body.removeChild(a); URL.revokeObjectURL(url);
   toast('Log exported as CSV', 'success');

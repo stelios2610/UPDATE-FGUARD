@@ -1,7 +1,7 @@
 """High Availability Manager — VRRP via keepalived + config sync.
 
 Architecture:
-  - Two FGUARD UTC nodes: MASTER (priority 100) and BACKUP (priority 90)
+  - Two FGUARD nodes: MASTER (priority 100) and BACKUP (priority 90)
   - keepalived manages VRRP: Virtual IP floats to active MASTER
   - On failover, BACKUP becomes MASTER and takes the Virtual IP
   - Config sync: MASTER periodically rsyncs its config/DB to BACKUP
@@ -16,7 +16,7 @@ from core.platform import IS_LINUX, run
 
 KEEPALIVED_CONF = "/etc/keepalived/keepalived.conf"
 KEEPALIVED_D    = "/etc/keepalived/keepalived.d"
-NOTIFY_SCRIPT   = "/etc/keepalived/aegisguard-notify.sh"
+NOTIFY_SCRIPT   = "/etc/keepalived/fguard-notify.sh"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -45,18 +45,18 @@ def write_keepalived_config():
     os.makedirs("/etc/keepalived", exist_ok=True)
     _write_notify_script()
 
-    conf = f"""# FGUARD UTC HA — keepalived config
+    conf = f"""# FGUARD HA — keepalived config
 # Generated: {datetime.now().isoformat()}
 # Role: {role}
 
 global_defs {{
-    router_id AEGISGUARD_{role}
+    router_id FGUARD_{role}
     script_user root
     enable_script_security
 }}
 
-vrrp_script chk_aegisguard {{
-    script "/usr/bin/systemctl is-active aegisguard"
+vrrp_script chk_fguard {{
+    script "/usr/bin/systemctl is-active fguard"
     interval 2
     weight -20
     fall 2
@@ -81,7 +81,7 @@ vrrp_instance AEGIS_HA {{
     }}
 
     track_script {{
-        chk_aegisguard
+        chk_fguard
     }}
 
     notify "{NOTIFY_SCRIPT}"
@@ -99,7 +99,7 @@ vrrp_instance AEGIS_HA {{
 def _write_notify_script():
     """Write the VRRP state-change notification script."""
     script = """#!/bin/bash
-# FGUARD UTC VRRP notify script
+# FGUARD VRRP notify script
 # Called by keepalived on state change
 # Args: $1=instance $2=state $3=priority
 
@@ -107,31 +107,33 @@ TYPE=$1
 NAME=$2
 STATE=$3
 
-logger -t aegisguard-ha "VRRP transition: $NAME -> $STATE"
+logger -t fguard-ha "VRRP transition: $NAME -> $STATE"
 
 case "$STATE" in
     MASTER)
         # We became master — ensure firewall is running
-        systemctl start aegisguard 2>/dev/null
+        systemctl start fguard 2>/dev/null
         systemctl start dnsmasq 2>/dev/null
         # Re-apply NAT masquerade
         iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE 2>/dev/null || true
         python3 -c "
-import sys; sys.path.insert(0,'/opt/aegisguard')
+import sys; sys.path.insert(0,'/opt/fguard')
 from db import database
+from core.bov_manager import pin_ipsec_nat_rules
+pin_ipsec_nat_rules()
 database.add_log('WARN', details='HA: became MASTER')
 " 2>/dev/null
         ;;
     BACKUP)
         python3 -c "
-import sys; sys.path.insert(0,'/opt/aegisguard')
+import sys; sys.path.insert(0,'/opt/fguard')
 from db import database
 database.add_log('INFO', details='HA: became BACKUP')
 " 2>/dev/null
         ;;
     FAULT)
         python3 -c "
-import sys; sys.path.insert(0,'/opt/aegisguard')
+import sys; sys.path.insert(0,'/opt/fguard')
 from db import database
 database.add_log('WARN', details='HA: entered FAULT state')
 " 2>/dev/null
@@ -270,7 +272,7 @@ def sync_now():
 
 
 def _do_sync(peer_ip):
-    """Rsync FGUARD UTC config and database to peer."""
+    """Rsync FGUARD config and database to peer."""
     if not IS_LINUX:
         return False, "Sync requires Linux"
 
@@ -279,14 +281,14 @@ def _do_sync(peer_ip):
         "--exclude=*.pyc", "--exclude=__pycache__",
         "--exclude=build/iso-work", "--exclude=build/*.iso",
         "-e", "ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5",
-        "/opt/aegisguard/",
-        f"root@{peer_ip}:/opt/aegisguard/"
+        "/opt/fguard/",
+        f"root@{peer_ip}:/opt/fguard/"
     ], timeout=60)
 
     if ok:
-        # Reload peer's aegisguard service
+        # Reload peer's fguard service
         run(["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
-             f"root@{peer_ip}", "systemctl reload aegisguard"], timeout=10)
+             f"root@{peer_ip}", "systemctl reload fguard"], timeout=10)
         database.add_log("INFO", details=f"HA sync completed to {peer_ip}")
         return True, f"Synced to {peer_ip}"
     return False, err

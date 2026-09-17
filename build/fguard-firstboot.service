@@ -1,0 +1,15 @@
+[Unit]
+Description=FGUARD First Boot Network Setup
+After=network.target
+Before=fguard.service
+ConditionPathExists=!/etc/fguard/.firstboot_done
+
+[Service]
+Type=oneshot
+ExecStart=/opt/fguard/build/first-boot.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

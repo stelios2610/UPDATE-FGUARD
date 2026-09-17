@@ -39,7 +39,7 @@ def verify_totp(secret, user_code, window=1):
     return False
 
 
-def get_qr_code_bytes(username, secret, issuer="FGUARD UTC"):
+def get_qr_code_bytes(username, secret, issuer="FGUARD"):
     """Generate QR code image bytes for authenticator app setup."""
     uri = f"otpauth://totp/{issuer}:{username}?secret={secret}&issuer={issuer}&algorithm=SHA1&digits=6&period=30"
     qr = qrcode.QRCode(box_size=6, border=2)
@@ -51,7 +51,7 @@ def get_qr_code_bytes(username, secret, issuer="FGUARD UTC"):
     return buf.getvalue()
 
 
-def get_qr_code_uri(username, secret, issuer="FGUARD UTC"):
+def get_qr_code_uri(username, secret, issuer="FGUARD"):
     return f"otpauth://totp/{issuer}:{username}?secret={secret}&issuer={issuer}&algorithm=SHA1&digits=6&period=30"
 
 

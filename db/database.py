@@ -650,7 +650,7 @@ def initialize():
         ("router_mode", "0"),
         ("wan_interface", ""),
         ("lan_interface", ""),
-        ("hostname", "aegisguard"),
+        ("hostname", "fguard"),
         ("timezone", "UTC"),
         ("admin_password_hash", ""),
         ("web_ui_port", "8080"),
@@ -704,7 +704,7 @@ def _seed_default_rules():
         ("Allow Established",       "ALLOW", "IN",   "TCP",  "", "",  "", "", 2,  "Allow established/related TCP sessions"),
         # ── Priority 10-30: Management access ────────────────────────────────
         ("Allow SSH from LAN",      "ALLOW", "IN",   "TCP",  "10.0.0.0/24", "", "",  "22", 10, "SSH management from LAN only"),
-        ("Allow Web UI from LAN",   "ALLOW", "IN",   "TCP",  "10.0.0.0/24", "", "",  "8080", 11, "FGUARD UTC web UI from LAN only"),
+        ("Allow Web UI from LAN",   "ALLOW", "IN",   "TCP",  "10.0.0.0/24", "", "",  "8080", 11, "FGUARD web UI from LAN only"),
         ("Block Web UI from WAN",   "BLOCK", "IN",   "TCP",  "", "", "",  "8080", 12, "Block web UI from WAN"),
         ("Block SSH from WAN",      "BLOCK", "IN",   "TCP",  "", "", "",  "22", 13, "Block SSH from WAN"),
         # ── Priority 20-30: Outbound essential services ───────────────────────
