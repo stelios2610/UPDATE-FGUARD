@@ -1,9 +1,9 @@
 {
-  "version": "1.0.21",
+  "version": "1.0.22",
   "date": "2026-09-17",
   "product": "FGUARD",
   "changelog": [
-    "UI: top-bar Blocked counts real BLOCK/DROP/THREAT logs, not all events today",
-    "UI: dashboard cards no longer share IDs with the top bar (CPU/mem/connections update correctly)"
+    "OTA: never run aegisguard and fguard together (both bind :8888; GUI stayed on old code)",
+    "UI: Blocked counts real BLOCK/DROP/THREAT events, not all logs"
   ]
 }

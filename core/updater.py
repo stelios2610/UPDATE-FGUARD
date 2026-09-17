@@ -212,13 +212,27 @@ def apply_update():
 def _restart_service():
     import time
     time.sleep(2)
-    for unit in ("aegisguard", "fguard"):
-        try:
-            r = subprocess.run(["systemctl", "restart", unit], timeout=30)
-            if r.returncode == 0:
-                return
-        except Exception:
-            pass
+    # Never run aegisguard and fguard together — both bind 127.0.0.1:8888.
+    # Restarting the first enabled unit and leaving the other running leaves
+    # the old process on the port, so OTA files are on disk but the GUI is stale.
+    subprocess.run(["systemctl", "stop", "fguard"], timeout=30, check=False)
+    subprocess.run(["systemctl", "stop", "aegisguard"], timeout=30, check=False)
+    time.sleep(1)
+    start = "aegisguard"
+    try:
+        r = subprocess.run(
+            ["systemctl", "is-enabled", "aegisguard"],
+            timeout=10, capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            start = "fguard"
+    except Exception:
+        pass
+    try:
+        subprocess.run(["systemctl", "reset-failed", start], timeout=10, check=False)
+        subprocess.run(["systemctl", "start", start], timeout=30, check=False)
+    except Exception:
+        pass
 
 
 # ── Daily background checker ───────────────────────────────────────────────────

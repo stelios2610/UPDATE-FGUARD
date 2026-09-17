@@ -98,11 +98,12 @@ EOF
 printf '%s\n' "$FGUARD_UNIT" > /etc/systemd/system/fguard.service
 printf '%s\n' "$FGUARD_UNIT" > /etc/systemd/system/aegisguard.service
 systemctl daemon-reload
-# Keep the unit that is already enabled; do not enable a second copy.
 if systemctl is-enabled aegisguard >/dev/null 2>&1; then
     systemctl enable aegisguard.service 2>/dev/null || true
+    systemctl disable --now fguard.service 2>/dev/null || true
 elif systemctl is-enabled fguard >/dev/null 2>&1; then
     systemctl enable fguard.service 2>/dev/null || true
+    systemctl disable --now aegisguard.service 2>/dev/null || true
 else
     systemctl enable aegisguard.service 2>/dev/null || systemctl enable fguard.service 2>/dev/null || true
 fi
