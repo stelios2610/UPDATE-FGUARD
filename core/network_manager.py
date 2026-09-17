@@ -191,6 +191,18 @@ def _write_interfaces_file(ifaces):
 
 # ─── DHCP server (dnsmasq) ────────────────────────────────────────────────────
 
+# Many CGNAT ISPs intercept Google Public DNS: ICMP to 8.8.8.8 works, UDP/53
+# stalls. dnsmasq then fills its query pool and the LAN looks like "no internet".
+_STALLED_DNS_UPSTREAMS = {"8.8.8.8", "8.8.4.4"}
+
+
+def _dnsmasq_upstream(addr, fallback):
+    a = (addr or "").strip()
+    if not a or a in _STALLED_DNS_UPSTREAMS:
+        return fallback
+    return a
+
+
 def write_dhcp_config():
     """Write dnsmasq config for DHCP server."""
     if not IS_LINUX:
@@ -208,13 +220,20 @@ def write_dhcp_config():
         "# FGUARD DHCP config (dnsmasq)",
         "no-resolv",
         "no-poll",
+        # One slow upstream (e.g. ISP-intercepted 8.8.8.8) must not fill the
+        # query pool and black-hole the LAN while ICMP still works.
+        "dns-forward-max=2500",
+        "cache-size=10000",
+        "strict-order",
         "bogus-priv",
         "domain-needed",
     ]
 
     dns_s = database.get_dns_settings()
-    primary = dns_s.get("primary_dns") or "8.8.8.8"
-    secondary = dns_s.get("secondary_dns") or "1.1.1.1"
+    primary = _dnsmasq_upstream(dns_s.get("primary_dns"), "1.1.1.1")
+    secondary = _dnsmasq_upstream(dns_s.get("secondary_dns"), "1.0.0.1")
+    if secondary == primary:
+        secondary = "9.9.9.9" if primary != "9.9.9.9" else "1.0.0.1"
     lines.append(f"server={primary}")
     lines.append(f"server={secondary}")
     if dns_s.get("local_domain"):

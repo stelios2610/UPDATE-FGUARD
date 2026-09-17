@@ -1,9 +1,9 @@
 {
-  "version": "1.0.19",
+  "version": "1.0.20",
   "date": "2026-09-17",
   "product": "FGUARD",
   "changelog": [
-    "Brand: on-screen name is FGUARD (UTC removed from login and UI)",
-    "Brand: AegisGuard renamed to FGUARD; live appliances keep /opt/aegisguard, license, nginx and systemd working via compatibility links"
+    "DNS: do not use ISP-intercepted 8.8.8.8 as dnsmasq upstream (ping works, sites fail)",
+    "DNS: raise dnsmasq forward limit and cache; query upstreams in order"
   ]
 }

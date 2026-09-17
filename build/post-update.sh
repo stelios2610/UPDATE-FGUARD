@@ -178,3 +178,49 @@ if [[ -f "${BASE_DIR}/build/dns-watchdog.sh" ]]; then
         systemctl restart dns-watchdog.timer 2>/dev/null || true
     fi
 fi
+
+# ── v1.0.20: ISP-intercepted 8.8.8.8 must not stall LAN DNS ───────────────────
+# Cosmote (and similar CGNAT) answers ICMP to 8.8.8.8 but delays UDP/53.
+# dnsmasq then hits concurrent-query max; ping works, websites do not.
+# dhcp-relay / VLAN interface= lines are left untouched.
+DNSMASQ_RESTART=0
+mkdir -p /root/fguard-backups
+shopt -s nullglob
+for bak in /etc/dnsmasq.d/*.bak /etc/dnsmasq.d/*.bak-* /etc/dnsmasq.d/*~; do
+    mv "$bak" /root/fguard-backups/ 2>/dev/null || true
+    DNSMASQ_RESTART=1
+done
+shopt -u nullglob
+
+patch_dnsmasq_upstream() {
+    local conf="$1"
+    [ -f "$conf" ] || return 0
+    if ! grep -q '^dns-forward-max=' "$conf"; then
+        sed -i '/^no-poll$/a dns-forward-max=2500\ncache-size=10000\nstrict-order' "$conf"
+        DNSMASQ_RESTART=1
+    fi
+    if grep -qE '^server=8\.8\.[48]\.8$' "$conf"; then
+        sed -i 's/^server=8\.8\.8\.8$/server=1.0.0.1/; s/^server=8\.8\.4\.4$/server=1.0.0.1/' "$conf"
+        DNSMASQ_RESTART=1
+    fi
+}
+patch_dnsmasq_upstream /etc/dnsmasq.d/fguard.conf
+patch_dnsmasq_upstream /etc/dnsmasq.d/aegisguard.conf
+
+if [ -f "${BASE_DIR}/firewall.db" ]; then
+    python3 - "${BASE_DIR}/firewall.db" <<'PY' || true
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+try:
+    con.execute("UPDATE dns_settings SET secondary_dns='1.0.0.1' WHERE secondary_dns IN ('8.8.8.8','8.8.4.4')")
+    con.execute("UPDATE dns_settings SET primary_dns='1.1.1.1' WHERE primary_dns IN ('8.8.8.8','8.8.4.4')")
+    con.commit()
+except Exception:
+    pass
+con.close()
+PY
+fi
+
+if [ "$DNSMASQ_RESTART" -eq 1 ]; then
+    systemctl try-restart dnsmasq 2>/dev/null || true
+fi
