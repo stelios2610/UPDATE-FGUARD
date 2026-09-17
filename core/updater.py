@@ -213,26 +213,30 @@ def _restart_service():
     import time
     time.sleep(2)
     # Never run aegisguard and fguard together — both bind 127.0.0.1:8888.
-    # Restarting the first enabled unit and leaving the other running leaves
-    # the old process on the port, so OTA files are on disk but the GUI is stale.
-    subprocess.run(["systemctl", "stop", "fguard"], timeout=30, check=False)
-    subprocess.run(["systemctl", "stop", "aegisguard"], timeout=30, check=False)
-    time.sleep(1)
-    start = "aegisguard"
+    keep = "aegisguard"
     try:
         r = subprocess.run(
             ["systemctl", "is-enabled", "aegisguard"],
             timeout=10, capture_output=True, text=True,
         )
         if r.returncode != 0:
-            start = "fguard"
+            keep = "fguard"
     except Exception:
         pass
+    other = "fguard" if keep == "aegisguard" else "aegisguard"
+    subprocess.run(["systemctl", "stop", other], timeout=30, check=False)
+    # Do not systemctl stop the unit we are running in — that kills this
+    # process before start runs and leaves nginx 502. systemd-run lives
+    # outside our cgroup so start still happens after we exit.
     try:
-        subprocess.run(["systemctl", "reset-failed", start], timeout=10, check=False)
-        subprocess.run(["systemctl", "start", start], timeout=30, check=False)
+        subprocess.run(["systemctl", "reset-failed", keep], timeout=10, check=False)
+        subprocess.run(
+            ["systemd-run", "--collect", "--on-active=2s",
+             f"/bin/systemctl", "restart", keep],
+            timeout=15, check=False,
+        )
     except Exception:
-        pass
+        subprocess.run(["systemctl", "restart", keep], timeout=30, check=False)
 
 
 # ── Daily background checker ───────────────────────────────────────────────────

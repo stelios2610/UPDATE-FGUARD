@@ -1,9 +1,9 @@
 {
-  "version": "1.0.23",
+  "version": "1.0.24",
   "date": "2026-09-18",
   "product": "FGUARD",
   "changelog": [
-    "Network → DNS: Local DNS Hosts list (hostname → IP) visible and editable in the GUI",
-    "UniFi-style names such as unifi are stored as local DNS hosts so they survive apply/update"
+    "OTA: restart GUI without killing the update process first (fixes nginx 502 after apply)",
+    "Network → DNS: Local DNS Hosts list"
   ]
 }
