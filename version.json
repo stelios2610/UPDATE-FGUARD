@@ -1,9 +1,9 @@
 {
-  "version": "1.0.24",
-  "date": "2026-09-18",
+  "version": "1.0.25",
+  "date": "2026-09-22",
   "product": "FGUARD",
   "changelog": [
-    "OTA: restart GUI without killing the update process first (fixes nginx 502 after apply)",
-    "Network → DNS: Local DNS Hosts list"
+    "VPN: edit existing Branch Office (site-to-site) tunnels in the GUI",
+    "Site-to-site: multiple local/remote subnets on one IPSec tunnel"
   ]
 }

@@ -1965,9 +1965,35 @@ class BOVCreate(BaseModel):
     ssl_key: str = ""
     ssl_ta_key: str = ""
 
+def _get_bov_or_404(tid: int):
+    tunnel = database.get_bov_tunnel(tid)
+    if not tunnel:
+        raise HTTPException(404, "Tunnel not found")
+    return tunnel
+
+
+def _apply_ipsec_if_needed(tunnel_type: str):
+    if tunnel_type not in ("IKEv2", "IKEv1", "L2TP-IPSec"):
+        return True, ""
+    return bov_manager.apply_ipsec_tunnels()
+
+
 @app.get("/api/vpn/bov")
 async def api_get_bov():
     return database.get_bov_tunnels()
+
+@app.post("/api/vpn/bov/apply-ipsec")
+async def api_apply_ipsec():
+    ok, msg = bov_manager.apply_ipsec_tunnels()
+    return {"status": "ok" if ok else "error", "message": msg}
+
+@app.get("/api/vpn/bov/ipsec-status")
+async def api_bov_ipsec_status():
+    return {"output": bov_manager.get_ipsec_status()}
+
+@app.get("/api/vpn/bov/{tid}")
+async def api_get_bov_one(tid: int):
+    return _get_bov_or_404(tid)
 
 @app.post("/api/vpn/bov")
 async def api_add_bov(t: BOVCreate):
@@ -1981,8 +2007,10 @@ async def api_add_bov(t: BOVCreate):
         _auto_vpn_rules("SSL-BOV", "UDP", str(t.ssl_port or 1194))
     database.add_bov_tunnel(
         name=t.name, tunnel_type=t.tunnel_type,
-        remote_gateway=t.remote_gateway, remote_subnets=t.remote_subnets,
-        local_subnets=t.local_subnets, local_gateway=t.local_gateway,
+        remote_gateway=t.remote_gateway,
+        remote_subnets=bov_manager.normalize_subnets(t.remote_subnets),
+        local_subnets=bov_manager.normalize_subnets(t.local_subnets),
+        local_gateway=t.local_gateway,
         psk=t.psk, ike_version=t.ike_version, ike_cipher=t.ike_cipher,
         ike_hash=t.ike_hash, ike_dh=t.ike_dh, ike_lifetime=t.ike_lifetime,
         esp_cipher=t.esp_cipher, esp_hash=t.esp_hash, esp_lifetime=t.esp_lifetime,
@@ -1996,11 +2024,68 @@ async def api_add_bov(t: BOVCreate):
         wg_preshared_key=t.wg_preshared_key, wg_port=t.wg_port,
         wg_keepalive=t.wg_keepalive, enabled=t.enabled, description=t.description
     )
-    return {"status": "ok"}
+    ok, msg = _apply_ipsec_if_needed(t.tunnel_type)
+    return {"status": "ok" if ok else "error", "message": msg or "Tunnel saved"}
+
+@app.put("/api/vpn/bov/{tid}")
+async def api_update_bov(tid: int, t: BOVCreate):
+    _get_bov_or_404(tid)
+    fields = {
+        "name": t.name,
+        "type": t.tunnel_type,
+        "remote_gateway": t.remote_gateway,
+        "remote_subnets": bov_manager.normalize_subnets(t.remote_subnets),
+        "local_subnets": bov_manager.normalize_subnets(t.local_subnets),
+        "local_gateway": t.local_gateway,
+        "ike_version": t.ike_version,
+        "ike_cipher": t.ike_cipher,
+        "ike_hash": t.ike_hash,
+        "ike_dh": t.ike_dh,
+        "ike_lifetime": t.ike_lifetime,
+        "esp_cipher": t.esp_cipher,
+        "esp_hash": t.esp_hash,
+        "esp_lifetime": t.esp_lifetime,
+        "pfs_group": t.pfs_group,
+        "dpd_enabled": t.dpd_enabled,
+        "dpd_interval": t.dpd_interval,
+        "dpd_timeout": t.dpd_timeout,
+        "nat_traversal": t.nat_traversal,
+        "aggressive_mode": t.aggressive_mode,
+        "l2tp_local_ip": t.l2tp_local_ip,
+        "l2tp_remote_ip": t.l2tp_remote_ip,
+        "ssl_port": t.ssl_port,
+        "ssl_protocol": t.ssl_protocol,
+        "ssl_cipher": t.ssl_cipher,
+        "wg_port": t.wg_port,
+        "wg_keepalive": t.wg_keepalive,
+        "enabled": t.enabled,
+        "description": t.description,
+    }
+    if t.psk:
+        fields["psk"] = t.psk
+    if t.wg_private_key:
+        fields["wg_private_key"] = t.wg_private_key
+    if t.wg_public_key:
+        fields["wg_public_key"] = t.wg_public_key
+    if t.wg_peer_pubkey:
+        fields["wg_peer_pubkey"] = t.wg_peer_pubkey
+    if t.wg_preshared_key:
+        fields["wg_preshared_key"] = t.wg_preshared_key
+    if t.ssl_ca_cert:
+        fields["ssl_ca_cert"] = t.ssl_ca_cert
+    if t.ssl_cert:
+        fields["ssl_cert"] = t.ssl_cert
+    if t.ssl_key:
+        fields["ssl_key"] = t.ssl_key
+    if t.ssl_ta_key:
+        fields["ssl_ta_key"] = t.ssl_ta_key
+    database.update_bov_tunnel(tid, **fields)
+    ok, msg = _apply_ipsec_if_needed(t.tunnel_type)
+    return {"status": "ok" if ok else "error", "message": msg or "Tunnel updated"}
 
 @app.delete("/api/vpn/bov/{tid}")
 async def api_del_bov(tid: int):
-    tunnel = next((t for t in database.get_bov_tunnels() if t["id"] == tid), None)
+    tunnel = database.get_bov_tunnel(tid)
     if tunnel:
         bov_manager.delete_tunnel(tunnel)
     database.delete_bov_tunnel(tid)
@@ -2008,40 +2093,24 @@ async def api_del_bov(tid: int):
 
 @app.post("/api/vpn/bov/{tid}/connect")
 async def api_bov_connect(tid: int):
-    tunnel = next((t for t in database.get_bov_tunnels() if t["id"] == tid), None)
-    if not tunnel:
-        raise HTTPException(404)
+    tunnel = _get_bov_or_404(tid)
     ok, msg = bov_manager.connect_tunnel(tunnel)
     return {"status": "ok" if ok else "error", "message": msg}
 
 @app.post("/api/vpn/bov/{tid}/disconnect")
 async def api_bov_disconnect(tid: int):
-    tunnel = next((t for t in database.get_bov_tunnels() if t["id"] == tid), None)
-    if not tunnel:
-        raise HTTPException(404)
+    tunnel = _get_bov_or_404(tid)
     ok, msg = bov_manager.disconnect_tunnel(tunnel)
     return {"status": "ok" if ok else "error", "message": msg}
 
 @app.get("/api/vpn/bov/{tid}/peer-config")
 async def api_bov_peer_config(tid: int):
-    tunnel = next((t for t in database.get_bov_tunnels() if t["id"] == tid), None)
-    if not tunnel:
-        raise HTTPException(404)
+    tunnel = _get_bov_or_404(tid)
     conf = bov_manager.export_peer_config(tunnel)
     return StreamingResponse(
         io.StringIO(conf), media_type="text/plain",
         headers={"Content-Disposition": f"attachment; filename=bov-{tunnel['name']}-peer.conf"}
     )
-
-@app.post("/api/vpn/bov/apply-ipsec")
-async def api_apply_ipsec():
-    ok, msg = bov_manager.apply_ipsec_tunnels()
-    return {"status": "ok" if ok else "error", "message": msg}
-
-@app.get("/api/vpn/bov/ipsec-status")
-async def api_bov_ipsec_status():
-    return {"output": bov_manager.get_ipsec_status()}
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # REST API — Multi-WAN

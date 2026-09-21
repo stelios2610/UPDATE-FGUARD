@@ -1884,6 +1884,13 @@ def get_bov_tunnels():
     return [dict(r) for r in rows]
 
 
+def get_bov_tunnel(tunnel_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM bov_tunnels WHERE id = ?", (tunnel_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def add_bov_tunnel(name, tunnel_type, remote_gateway, remote_subnets,
                    local_subnets="", local_gateway="", psk="",
                    ike_version="IKEv2", ike_cipher="AES256", ike_hash="SHA256",

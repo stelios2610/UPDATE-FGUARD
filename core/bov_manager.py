@@ -1,5 +1,6 @@
 """Branch Office VPN (BOV) Manager - Site-to-Site with all protocols.
 Supports: IKEv2/IPSec, IKEv1/IPSec, L2TP/IPSec, SSL/OpenVPN, WireGuard, GRE."""
+import ipaddress
 import os
 import subprocess
 import threading
@@ -28,6 +29,37 @@ _DH_MAP = {
 }
 
 
+def _subnet_list(raw):
+    """Split Local/Remote Subnets into CIDRs (comma, semicolon, or newline)."""
+    parts = []
+    for p in (raw or "").replace(";", ",").replace("\n", ",").split(","):
+        p = p.strip()
+        if p:
+            parts.append(p)
+    return parts
+
+
+def _ts_csv(raw, default="0.0.0.0/0"):
+    parts = _subnet_list(raw)
+    return ",".join(parts) if parts else default
+
+
+def normalize_subnets(raw):
+    """Canonical comma-separated CIDR list for storage and swanctl."""
+    return ",".join(_subnet_list(raw))
+
+
+def _openvpn_route_lines(raw):
+    lines = []
+    for cidr in _subnet_list(raw):
+        try:
+            net = ipaddress.ip_network(cidr, strict=False)
+            lines.append(f"route {net.network_address} {net.netmask}")
+        except ValueError:
+            continue
+    return "\n".join(lines)
+
+
 def _write_swanctl_conf(tunnel):
     """Generate a swanctl.conf snippet for one tunnel."""
     name = tunnel["name"].replace(" ", "_")
@@ -43,8 +75,8 @@ def _write_swanctl_conf(tunnel):
     ike_proposal = f"{ike_c}-{ike_h}-{ike_dh}"
     esp_proposal = f"{esp_c}-{esp_h}-{pfs_dh}"
 
-    local_ts   = tunnel.get("local_subnets",  "0.0.0.0/0")
-    remote_ts  = tunnel.get("remote_subnets", "0.0.0.0/0")
+    local_ts   = _ts_csv(tunnel.get("local_subnets"), "0.0.0.0/0")
+    remote_ts  = _ts_csv(tunnel.get("remote_subnets"), "0.0.0.0/0")
     remote_gw  = tunnel["remote_gateway"]
     psk        = tunnel.get("psk", "")
     start_act  = "start" if tunnel.get("enabled", 1) else "none"
@@ -131,37 +163,41 @@ def pin_ipsec_nat_rules():
     ]
     vpn_net = _vpn_cidr()
     for t in reversed(tunnels):
-        local_ts = (t.get("local_subnets") or "").strip()
-        remote_ts = (t.get("remote_subnets") or "").strip()
-        if not local_ts or not remote_ts:
+        locals_ = _subnet_list(t.get("local_subnets"))
+        remotes = _subnet_list(t.get("remote_subnets"))
+        if not locals_ or not remotes:
             continue
         lan_ip = _lan_ip_for_tunnel(t)
 
-        run(["ip", "rule", "del", "from", vpn_net, "to", remote_ts,
-             "lookup", "220", "pref", "205"])
-        run(["ip", "rule", "add", "from", vpn_net, "to", remote_ts,
-             "lookup", "220", "pref", "205"])
+        for remote_ts in remotes:
+            run(["ip", "rule", "del", "from", vpn_net, "to", remote_ts,
+                 "lookup", "220", "pref", "205"])
+            run(["ip", "rule", "add", "from", vpn_net, "to", remote_ts,
+                 "lookup", "220", "pref", "205"])
+            if lan_ip:
+                _reinsert_nat([
+                    "-s", vpn_net, "-d", remote_ts,
+                    "-j", "SNAT", "--to-source", lan_ip,
+                ])
+            for spec in (
+                ["-i", "tun0", "-d", remote_ts, "-j", "ACCEPT"],
+                ["-s", remote_ts, "-o", "tun0", "-j", "ACCEPT"],
+            ):
+                run(["iptables", "-D", "FORWARD"] + spec)
+                run(["iptables", "-I", "FORWARD", "1"] + spec)
 
-        if lan_ip:
-            _reinsert_nat([
-                "-s", vpn_net, "-d", remote_ts,
-                "-j", "SNAT", "--to-source", lan_ip,
-            ])
-        _reinsert_nat(["-s", local_ts, "-d", remote_ts, "-j", "RETURN"])
-
-        for spec in (
-            ["-s", remote_ts, "-d", local_ts, "-j", "ACCEPT"],
-            ["-s", local_ts, "-d", remote_ts, "-j", "ACCEPT"],
-            ["-i", "tun0", "-d", remote_ts, "-j", "ACCEPT"],
-            ["-s", remote_ts, "-o", "tun0", "-j", "ACCEPT"],
-        ):
-            run(["iptables", "-D", "FORWARD"] + spec)
-            run(["iptables", "-I", "FORWARD", "1"] + spec)
-
-        run(["iptables", "-D", "INPUT",
-             "-s", remote_ts, "-d", local_ts, "-j", "ACCEPT"])
-        run(["iptables", "-I", "INPUT", "1",
-             "-s", remote_ts, "-d", local_ts, "-j", "ACCEPT"])
+            for local_ts in locals_:
+                _reinsert_nat(["-s", local_ts, "-d", remote_ts, "-j", "RETURN"])
+                for spec in (
+                    ["-s", remote_ts, "-d", local_ts, "-j", "ACCEPT"],
+                    ["-s", local_ts, "-d", remote_ts, "-j", "ACCEPT"],
+                ):
+                    run(["iptables", "-D", "FORWARD"] + spec)
+                    run(["iptables", "-I", "FORWARD", "1"] + spec)
+                run(["iptables", "-D", "INPUT",
+                     "-s", remote_ts, "-d", local_ts, "-j", "ACCEPT"])
+                run(["iptables", "-I", "INPUT", "1",
+                     "-s", remote_ts, "-d", local_ts, "-j", "ACCEPT"])
 
     if tunnels:
         pol = ["-m", "policy", "--dir", "out", "--pol", "ipsec", "-j", "ACCEPT"]
@@ -187,12 +223,21 @@ def apply_ipsec_tunnels():
 
     try:
         os.makedirs(SWANCTL_CONF_DIR, exist_ok=True)
+        keep = set()
         for t in ipsec_tunnels:
             name = t["name"].replace(" ", "_")
-            conf_path = os.path.join(SWANCTL_CONF_DIR, f"fguard-{name}.conf")
+            fn = f"fguard-{name}.conf"
+            keep.add(fn)
+            conf_path = os.path.join(SWANCTL_CONF_DIR, fn)
             with open(conf_path, "w") as f:
                 f.write(_write_swanctl_conf(t))
             os.chmod(conf_path, 0o600)
+        for fn in os.listdir(SWANCTL_CONF_DIR):
+            if fn.startswith("fguard-") and fn.endswith(".conf") and fn not in keep:
+                try:
+                    os.remove(os.path.join(SWANCTL_CONF_DIR, fn))
+                except Exception:
+                    pass
 
         run(["systemctl", "restart", "strongswan"])
         ok, out, err = run(["swanctl", "--load-all"])
@@ -267,7 +312,7 @@ ListenPort = {tunnel.get('wg_port',51820)}
 PublicKey = {tunnel.get('wg_peer_pubkey','')}
 {'PresharedKey = ' + tunnel.get('wg_preshared_key','') if tunnel.get('wg_preshared_key') else ''}
 Endpoint = {tunnel['remote_gateway']}:{tunnel.get('wg_port',51820)}
-AllowedIPs = {tunnel.get('remote_subnets','0.0.0.0/0')}
+AllowedIPs = {_ts_csv(tunnel.get('remote_subnets'), '0.0.0.0/0')}
 PersistentKeepalive = {tunnel.get('wg_keepalive',25)}
 """
     return conf
@@ -352,7 +397,7 @@ auth SHA256
 compress lz4-v2
 
 {'ifconfig 10.254.0.1 10.254.0.2' if is_server else 'ifconfig 10.254.0.2 10.254.0.1'}
-route {tunnel.get('remote_subnets','').split(',')[0].strip()} 255.255.255.0
+{_openvpn_route_lines(tunnel.get('remote_subnets',''))}
 
 keepalive 10 120
 persist-key
@@ -547,7 +592,7 @@ ListenPort = {tunnel.get('wg_port',51820)}
 PublicKey = {tunnel.get('wg_public_key','<LOCAL_PUBLIC_KEY>')}
 {'PresharedKey = ' + tunnel.get('wg_preshared_key','') if tunnel.get('wg_preshared_key') else ''}
 Endpoint = <YOUR_LOCAL_PUBLIC_IP>:{tunnel.get('wg_port',51820)}
-AllowedIPs = {tunnel.get('local_subnets','0.0.0.0/0')}
+AllowedIPs = {_ts_csv(tunnel.get('local_subnets'), '0.0.0.0/0')}
 PersistentKeepalive = {tunnel.get('wg_keepalive',25)}
 """
         return conf
@@ -559,9 +604,9 @@ PersistentKeepalive = {tunnel.get('wg_keepalive',25)}
 conn {name.replace(' ','_')}-remote
     keyexchange={t.lower()}
     left=%defaultroute
-    leftsubnet={tunnel.get('remote_subnets','')}
+    leftsubnet={_ts_csv(tunnel.get('remote_subnets'), '')}
     right=<LOCAL_GATEWAY_IP>
-    rightsubnet={tunnel.get('local_subnets','')}
+    rightsubnet={_ts_csv(tunnel.get('local_subnets'), '')}
     ike={tunnel.get('ike_cipher','aes256').lower()}-{tunnel.get('ike_hash','sha256').lower()}-{'modp2048'}!
     esp={tunnel.get('esp_cipher','aes256').lower()}-{tunnel.get('esp_hash','sha256').lower()}!
     authby=secret
