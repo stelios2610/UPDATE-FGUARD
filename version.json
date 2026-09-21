@@ -1,9 +1,9 @@
 {
-  "version": "1.0.25",
+  "version": "1.0.26",
   "date": "2026-09-22",
   "product": "FGUARD",
   "changelog": [
-    "VPN: edit existing Branch Office (site-to-site) tunnels in the GUI",
-    "Site-to-site: multiple local/remote subnets on one IPSec tunnel"
+    "VPN: add extra local and remote subnets on the same Branch Office tunnel",
+    "IPS: do not treat the firewall DNS upstreams as a port scan"
   ]
 }

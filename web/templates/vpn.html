@@ -317,12 +317,18 @@
           <input class="form-control" id="bov-local-gw" placeholder="auto-detect if blank"></div>
       </div>
       <div class="form-row">
-        <div class="form-group"><label class="form-label">Local Subnets</label>
-          <input class="form-control" id="bov-local-subnets" placeholder="192.168.0.0/24, 192.168.20.0/24">
-          <div class="text-muted" style="font-size:11px;margin-top:4px">Comma-separated CIDRs. Both peers must list the same networks.</div></div>
-        <div class="form-group"><label class="form-label">Remote Subnets *</label>
-          <input class="form-control" id="bov-remote-subnets" placeholder="10.16.0.0/24, 10.20.0.0/24">
-          <div class="text-muted" style="font-size:11px;margin-top:4px">Example: Tavros LAN + extra office subnet.</div></div>
+        <div class="form-group">
+          <label class="form-label">Local Subnets</label>
+          <div id="bov-local-list"></div>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="addBOVSubnet('local')">+ Add local subnet</button>
+          <div class="text-muted" style="font-size:11px;margin-top:4px">Each row is one network on this firewall. Add another for a second LAN.</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Remote Subnets *</label>
+          <div id="bov-remote-list"></div>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="addBOVSubnet('remote')">+ Add remote subnet</button>
+          <div class="text-muted" style="font-size:11px;margin-top:4px">Networks on the other site. The peer must list the same networks, swapped.</div>
+        </div>
       </div>
 
       <!-- IPSec Phase 1 & 2 -->
@@ -782,14 +788,53 @@ async function genWGPSK() { const r = await POST('/api/vpn/wireguard/keygen'); d
 
 function _bovSet(id, v) { const el = document.getElementById(id); if (el && v != null) el.value = v; }
 
+function splitBOVSubnets(raw) {
+  return String(raw || '').split(/[,;\n]+/).map(s => s.trim()).filter(Boolean);
+}
+
+function addBOVSubnet(side, value) {
+  const box = document.getElementById(`bov-${side}-list`);
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:6px;margin-bottom:6px';
+  const input = document.createElement('input');
+  input.className = 'form-control font-mono bov-subnet';
+  input.placeholder = side === 'local' ? '192.168.0.0/24' : '10.16.0.0/24';
+  input.value = value || '';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn btn-danger btn-sm';
+  btn.textContent = '✕';
+  btn.onclick = () => {
+    if (box.querySelectorAll('.bov-subnet').length <= 1) { input.value = ''; return; }
+    row.remove();
+  };
+  row.appendChild(input);
+  row.appendChild(btn);
+  box.appendChild(row);
+}
+
+function setBOVSubnets(side, values) {
+  const box = document.getElementById(`bov-${side}-list`);
+  box.innerHTML = '';
+  const list = (values && values.length) ? values : [''];
+  list.forEach(v => addBOVSubnet(side, v));
+}
+
+function collectBOVSubnets(side) {
+  return [...document.querySelectorAll(`#bov-${side}-list .bov-subnet`)]
+    .map(el => el.value.trim()).filter(Boolean).join(', ');
+}
+
 function resetBOVModal() {
   document.getElementById('bov-edit-id').value = '';
   document.getElementById('bov-modal-title').textContent = 'New Branch Office VPN Tunnel';
   document.getElementById('bov-psk').placeholder = 'PSK';
-  ['bov-name','bov-remote-gw','bov-local-gw','bov-local-subnets','bov-remote-subnets','bov-desc','bov-psk',
+  ['bov-name','bov-remote-gw','bov-local-gw','bov-desc','bov-psk',
    'bov-wg-priv','bov-wg-pub','bov-wg-peer-pub','bov-wg-psk','bov-ssl-ca','bov-ssl-cert','bov-ssl-key'].forEach(id => {
     const el = document.getElementById(id); if (el) el.value = '';
   });
+  setBOVSubnets('local', ['']);
+  setBOVSubnets('remote', ['']);
   _bovSet('bov-type', 'IKEv2');
   _bovSet('bov-ike-cipher', 'AES256');
   _bovSet('bov-ike-hash', 'SHA256');
@@ -824,8 +869,8 @@ async function editBOV(id) {
   _bovSet('bov-type', t.type);
   _bovSet('bov-remote-gw', t.remote_gateway);
   _bovSet('bov-local-gw', t.local_gateway);
-  _bovSet('bov-local-subnets', t.local_subnets);
-  _bovSet('bov-remote-subnets', t.remote_subnets);
+  setBOVSubnets('local', splitBOVSubnets(t.local_subnets));
+  setBOVSubnets('remote', splitBOVSubnets(t.remote_subnets));
   _bovSet('bov-desc', t.description);
   _bovSet('bov-psk', '');
   _bovSet('bov-ike-cipher', t.ike_cipher);
@@ -858,7 +903,7 @@ async function editBOV(id) {
 async function saveBOV() {
   const t = document.getElementById('bov-type').value;
   const editId = document.getElementById('bov-edit-id').value;
-  const data = { name:document.getElementById('bov-name').value.trim(), tunnel_type:t, remote_gateway:document.getElementById('bov-remote-gw').value.trim(), local_gateway:document.getElementById('bov-local-gw').value.trim(), local_subnets:document.getElementById('bov-local-subnets').value.trim(), remote_subnets:document.getElementById('bov-remote-subnets').value.trim(), description:document.getElementById('bov-desc').value.trim() };
+  const data = { name:document.getElementById('bov-name').value.trim(), tunnel_type:t, remote_gateway:document.getElementById('bov-remote-gw').value.trim(), local_gateway:document.getElementById('bov-local-gw').value.trim(), local_subnets:collectBOVSubnets('local'), remote_subnets:collectBOVSubnets('remote'), description:document.getElementById('bov-desc').value.trim() };
   if (!data.name||!data.remote_gateway||!data.remote_subnets) { toast('Name, Remote Gateway and Remote Subnets required','error'); return; }
   if (['IKEv2','IKEv1','L2TP-IPSec'].includes(t)) Object.assign(data, {psk:document.getElementById('bov-psk').value,ike_version:t.startsWith('IKEv1')?'IKEv1':'IKEv2',ike_cipher:document.getElementById('bov-ike-cipher').value,ike_hash:document.getElementById('bov-ike-hash').value,ike_dh:document.getElementById('bov-ike-dh').value,ike_lifetime:parseInt(document.getElementById('bov-ike-lifetime').value),esp_cipher:document.getElementById('bov-esp-cipher').value,esp_hash:document.getElementById('bov-esp-hash').value,pfs_group:document.getElementById('bov-pfs').value,esp_lifetime:parseInt(document.getElementById('bov-esp-lifetime').value),dpd_interval:parseInt(document.getElementById('bov-dpd-interval').value),nat_traversal:document.getElementById('bov-nat').checked?1:0,aggressive_mode:document.getElementById('bov-aggressive').checked?1:0});
   if (t==='WireGuard') Object.assign(data, {wg_private_key:document.getElementById('bov-wg-priv').value,wg_public_key:document.getElementById('bov-wg-pub').value,wg_peer_pubkey:document.getElementById('bov-wg-peer-pub').value,wg_preshared_key:document.getElementById('bov-wg-psk').value,wg_port:parseInt(document.getElementById('bov-wg-port').value),wg_keepalive:parseInt(document.getElementById('bov-wg-keepalive').value)});

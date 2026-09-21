@@ -16,13 +16,25 @@ _threat_callbacks = []
 # Block duration per severity (seconds)
 _BLOCK_DURATION = {"CRITICAL": 3600, "HIGH": 600, "MEDIUM": 0, "LOW": 0}
 
-# Never block these (LAN, loopback, private)
+# Never block these (LAN, loopback, private, public resolvers).
+# dnsmasq opens many sockets to 1.1.1.1/1.0.0.1; treating that as a scan
+# and DROPping the replies takes DNS (and browsing) down.
 _SAFE_NETS = [
     ipaddress.ip_network("127.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("1.1.1.1/32"),
+    ipaddress.ip_network("1.0.0.1/32"),
+    ipaddress.ip_network("8.8.8.8/32"),
+    ipaddress.ip_network("8.8.4.4/32"),
+    ipaddress.ip_network("9.9.9.9/32"),
+    ipaddress.ip_network("149.112.112.112/32"),
 ]
+
+# Outbound client sockets: high local port toward a normal service port.
+# Counting those local ports made every DNS/HTTPS peer look like a port scan.
+_OUTBOUND_REMOTE_PORTS = {53, 80, 123, 443, 853}
 
 SIGNATURES = [
     {
@@ -231,6 +243,16 @@ def _make_alert(sig, remote_ip, detail):
     return alert
 
 
+def _is_outbound_client(conn):
+    """True when this host opened the socket (DNS, web), not an inbound hit."""
+    if conn.status == psutil.CONN_SYN_SENT:
+        return True
+    laddr, raddr = conn.laddr, conn.raddr
+    if not laddr or not raddr:
+        return False
+    return laddr.port >= 1024 and raddr.port in _OUTBOUND_REMOTE_PORTS
+
+
 def _monitor_loop():
     global _running
     while _running:
@@ -238,12 +260,13 @@ def _monitor_loop():
             raw = psutil.net_connections(kind="inet")
             conns = []
             for c in raw:
-                if c.raddr and not _is_safe_ip(c.raddr.ip):
-                    conns.append({
-                        "remote_ip":  c.raddr.ip,
-                        "local_port": c.laddr.port if c.laddr else 0,
-                        "proto":      "TCP" if c.type == 1 else "UDP",
-                    })
+                if not c.raddr or _is_safe_ip(c.raddr.ip) or _is_outbound_client(c):
+                    continue
+                conns.append({
+                    "remote_ip":  c.raddr.ip,
+                    "local_port": c.laddr.port if c.laddr else 0,
+                    "proto":      "TCP" if c.type == 1 else "UDP",
+                })
             alerts = _check_signatures(conns)
             for alert in alerts:
                 _fire_alert(alert)
