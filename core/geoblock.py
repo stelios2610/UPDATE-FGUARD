@@ -96,6 +96,72 @@ def _download_cidrs(cc):
         return []
 
 
+def _ipset_names():
+    r = subprocess.run(["ipset", "list", "-n"], capture_output=True, text=True)
+    return set((r.stdout or "").split())
+
+
+def _create_compatible(name):
+    """Match the live set's type so ipset swap is accepted."""
+    header = []
+    typ = "hash:net"
+    listed = subprocess.run(["ipset", "list", IPSET_NAME], capture_output=True, text=True)
+    if listed.returncode == 0:
+        for line in (listed.stdout or "").splitlines():
+            if line.startswith("Type:"):
+                typ = line.split(":", 1)[1].strip()
+            elif line.startswith("Header:"):
+                header = line.split(":", 1)[1].split()
+                break
+    if not header:
+        header = ["family", "inet", "hashsize", "1024", "maxelem", "131072"]
+    return subprocess.run(
+        ["ipset", "create", name, typ, *header],
+        capture_output=True, text=True,
+    )
+
+
+def _fill_ipset(name, cidrs):
+    payload = "".join("add %s %s\n" % (name, c) for c in cidrs)
+    return subprocess.run(
+        ["ipset", "restore"], input=payload, capture_output=True, text=True,
+    )
+
+
+def _replace_ipset(cidrs):
+    """Load CIDRs into geo_allowed without destroying the set iptables holds."""
+    tmp = IPSET_NAME + "_new"
+    subprocess.run(["ipset", "destroy", tmp], capture_output=True)
+    created = _create_compatible(tmp)
+    if created.returncode != 0:
+        return False, "ipset create failed: " + (created.stderr or "").strip()
+
+    filled = _fill_ipset(tmp, cidrs)
+    if filled.returncode != 0:
+        subprocess.run(["ipset", "destroy", tmp], capture_output=True)
+        return False, "ipset restore failed: " + (filled.stderr or "").strip()
+
+    if IPSET_NAME in _ipset_names():
+        swapped = subprocess.run(
+            ["ipset", "swap", tmp, IPSET_NAME], capture_output=True, text=True,
+        )
+        if swapped.returncode != 0:
+            subprocess.run(["ipset", "flush", IPSET_NAME], capture_output=True)
+            filled = _fill_ipset(IPSET_NAME, cidrs)
+            subprocess.run(["ipset", "destroy", tmp], capture_output=True)
+            if filled.returncode != 0:
+                return False, "ipset swap failed: " + (swapped.stderr or filled.stderr or "").strip()
+        else:
+            subprocess.run(["ipset", "destroy", tmp], capture_output=True)
+    else:
+        renamed = subprocess.run(
+            ["ipset", "rename", tmp, IPSET_NAME], capture_output=True, text=True,
+        )
+        if renamed.returncode != 0:
+            return False, "ipset rename failed: " + (renamed.stderr or "").strip()
+    return True, ""
+
+
 def apply_geoblock():
     """Download country CIDRs, build ipset, install iptables rules."""
     if not IS_LINUX:
@@ -127,15 +193,11 @@ def apply_geoblock():
     all_cidrs = list(set(all_cidrs))
     print("Total CIDRs: %d" % len(all_cidrs))
 
-    # Create/replace ipset
-    subprocess.run("ipset destroy %s 2>/dev/null" % IPSET_NAME, shell=True)
-    r = subprocess.run("ipset create %s hash:net maxelem 131072" % IPSET_NAME,
-                       shell=True, capture_output=True, text=True)
-    if r.returncode != 0:
-        return False, "ipset create failed: " + r.stderr
-
-    for cidr in all_cidrs:
-        subprocess.run("ipset add %s %s 2>/dev/null" % (IPSET_NAME, cidr), shell=True)
+    # The live set is referenced by iptables, so destroy+create fails with
+    # "set with the same name already exists" and the new countries never apply.
+    ok, err = _replace_ipset(all_cidrs)
+    if not ok:
+        return False, err
 
     count = int(subprocess.run("ipset list %s | grep -c '/' 2>/dev/null" % IPSET_NAME,
                                shell=True, capture_output=True, text=True).stdout.strip() or "0")

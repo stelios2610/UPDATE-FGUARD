@@ -1,9 +1,8 @@
 {
-  "version": "1.0.26",
-  "date": "2026-09-22",
+  "version": "1.0.27",
+  "date": "2026-10-07",
   "product": "FGUARD",
   "changelog": [
-    "VPN: add extra local and remote subnets on the same Branch Office tunnel",
-    "IPS: do not treat the firewall DNS upstreams as a port scan"
+    "Geoblock: country changes apply when the ipset is already in use"
   ]
 }
