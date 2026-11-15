@@ -198,6 +198,12 @@ def _enforce_default_deny():
     return database.get_setting("enforce_default_deny", "0") == "1"
 
 
+def _wan_scoped(rule):
+    """Seeded 'from WAN' / 'from internet' rules must not also drop the LAN."""
+    text = f"{rule.get('name') or ''} {rule.get('description') or ''}".lower()
+    return "from wan" in text or "from internet" in text
+
+
 def _should_install(rule):
     if not rule.get("enabled"):
         return False
@@ -269,11 +275,13 @@ def _append_rule(rule):
         protos = [None]
     comment = f"fguard_{rule['id']}"
     installed = False
+    iface = (rule.get("interface") or "").strip()
+    if iface in ("", "ANY", "*") and _wan_scoped(rule):
+        iface = _detect_wan_iface()
     for chain in _rule_chains(rule):
         src, dst = _addrs_for(rule, chain)
         if not port and not src and not dst and action == "DROP" and not _enforce_default_deny():
             continue
-        iface = (rule.get("interface") or "").strip()
         for proto_name in protos:
             args = ["-A", chain]
             if proto_name:

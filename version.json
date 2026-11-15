@@ -1,8 +1,9 @@
 {
-  "version": "1.0.29",
+  "version": "1.0.30",
   "date": "2026-11-16",
   "product": "FGUARD",
   "changelog": [
-    "SSL VPN shows the connected client again (name, real address, tunnel address, bytes and since) and refreshes on its own. OpenVPN is not restarted."
+    "Rules that block the web UI or SSH from the WAN apply only on the internet interface, so the LAN can still open the firewall.",
+    "SSL VPN shows the connected client again and refreshes on its own. OpenVPN is not restarted."
   ]
 }
