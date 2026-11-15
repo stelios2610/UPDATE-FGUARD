@@ -108,8 +108,8 @@
       <div class="card-header"><div class="card-title">Connected Clients</div>
         <button class="btn btn-secondary btn-sm" onclick="refreshSSLClients()">Refresh</button></div>
       <div class="table-wrap">
-        <table><thead><tr><th>Username</th><th>Real IP</th><th>Bytes In</th><th>Bytes Out</th><th>Since</th></tr></thead>
-        <tbody id="ssl-clients"><tr><td colspan="5" class="text-muted" style="text-align:center;padding:20px">No connected clients</td></tr></tbody>
+        <table><thead><tr><th>Username</th><th>Real IP</th><th>VPN IP</th><th>Bytes In</th><th>Bytes Out</th><th>Since</th></tr></thead>
+        <tbody id="ssl-clients"><tr><td colspan="6" class="text-muted" style="text-align:center;padding:20px">No connected clients</td></tr></tbody>
         </table></div>
     </div>
   </div>
@@ -721,15 +721,29 @@ async function stopOpenVPN() {
 }
 
 // Load on page open
-document.addEventListener('DOMContentLoaded', () => { loadPublicIPState(); loadSSLRoutes(); });
+document.addEventListener('DOMContentLoaded', () => {
+  loadPublicIPState();
+  loadSSLRoutes();
+  refreshSSLClients();
+  setInterval(refreshSSLClients, 5000);
+});
 
 async function startSSLVPN() { const r = await POST('/api/vpn/ssl/start'); toast(r.message, r.status==='ok'?'success':'error'); }
 async function stopSSLVPN() { const r = await POST('/api/vpn/ssl/stop'); toast(r.message, 'info'); }
 async function refreshSSLClients() {
-  const c = await GET('/api/vpn/ssl/clients');
   const tbody = document.getElementById('ssl-clients');
-  if (!c||!c.length) { tbody.innerHTML='<tr><td colspan="5" class="text-muted" style="text-align:center;padding:16px">No connected clients</td></tr>'; return; }
-  tbody.innerHTML = c.map(x => `<tr><td>${x.username}</td><td class="font-mono">${x.real_ip}</td><td>${x.bytes_recv}</td><td>${x.bytes_sent}</td><td>${x.connected_since}</td></tr>`).join('');
+  if (!tbody) return;
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
+  try {
+    const c = await GET('/api/vpn/ssl/clients');
+    if (!c || !c.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="text-muted" style="text-align:center;padding:16px">No connected clients</td></tr>';
+      return;
+    }
+    tbody.innerHTML = c.map(x => `<tr><td>${esc(x.username)}</td><td class="font-mono">${esc(x.real_ip)}</td><td class="font-mono">${esc(x.virtual_ip || '—')}</td><td>${esc(x.bytes_recv || '—')}</td><td>${esc(x.bytes_sent || '—')}</td><td>${esc(x.connected_since || '—')}</td></tr>`).join('');
+  } catch (e) {}
 }
 
 async function loadSSLRoutes() {

@@ -1,6 +1,7 @@
 ﻿"""SSL VPN (Mobile VPN with SSL) - OpenVPN server management.
 Auto-generates PKI, manages users, generates per-user .ovpn configs."""
 import os
+import re
 import subprocess
 import threading
 import shutil
@@ -134,7 +135,8 @@ persist-key
 persist-tun
 user nobody
 group nogroup
-status /var/log/fguard-ssl-vpn-status.log
+status /var/log/fguard-ssl-vpn-status.log 5
+status-version 2
 log-append /var/log/fguard-ssl-vpn.log
 verb 3
 
@@ -473,59 +475,297 @@ def refresh_server_conf():
             pass
 
 
-def get_connected_clients():
-    """Read OpenVPN status log for connected clients.
-    Supports both status-version 2 (systemd service) and version 1 (direct start)."""
-    candidates = [
-        "/run/openvpn-server/status-server.log",  # openvpn-server@server.service
-        "/var/log/fguard-ssl-vpn-status.log",  # FGUARD direct start
-    ]
-    status_file = next((p for p in candidates if os.path.isfile(p)), None)
-    clients = []
-    if not status_file:
-        return clients
-    try:
-        with open(status_file) as f:
-            content = f.read()
+def _host_only(addr):
+    """Drop the UDP/TCP port OpenVPN appends to a client address."""
+    addr = (addr or "").strip()
+    if addr.startswith("["):
+        end = addr.find("]")
+        if end > 1:
+            return addr[1:end]
+    if addr.count(":") == 1:
+        host, port = addr.rsplit(":", 1)
+        if port.isdigit():
+            return host
+    return addr
 
-        # status-version 2: rows start with CLIENT_LIST,
-        if "CLIENT_LIST," in content:
-            for line in content.splitlines():
-                if not line.startswith("CLIENT_LIST,"):
-                    continue
-                parts = line.split(",")
-                # HEADER,CLIENT_LIST,... rows have "HEADER" prefix — skip
-                if len(parts) < 8:
-                    continue
-                clients.append({
-                    "username": parts[9] if len(parts) > 9 and parts[9] else parts[1],
-                    "real_ip": parts[2],
-                    "bytes_recv": parts[5],
-                    "bytes_sent": parts[6],
-                    "connected_since": parts[7],
-                })
+
+def _client_row(username, real_ip, virtual_ip="", bytes_recv="", bytes_sent="", connected_since=""):
+    return {
+        "username": username or "",
+        "real_ip": _host_only(real_ip),
+        "virtual_ip": virtual_ip or "",
+        "bytes_recv": bytes_recv or "",
+        "bytes_sent": bytes_sent or "",
+        "connected_since": connected_since or "",
+    }
+
+
+def _status_candidate_paths():
+    paths = [
+        "/run/openvpn-server/status-server.log",
+        "/run/openvpn/status-server.log",
+        "/var/log/fguard-ssl-vpn-status.log",
+        "/var/log/aegisguard-ssl-vpn-status.log",
+    ]
+    for conf in (SYSTEMD_CONF, SERVER_CONF):
+        try:
+            with open(conf, encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    parts = line.split()
+                    if parts and parts[0] == "status" and len(parts) > 1:
+                        paths.append(parts[1])
+        except Exception:
+            continue
+    seen = set()
+    unique = []
+    for path in paths:
+        if path and path not in seen:
+            seen.add(path)
+            unique.append(path)
+    return unique
+
+
+def _parse_status_text(content):
+    """Parse an OpenVPN status file. Version 2/3 is header-driven; version 1 is the old table."""
+    clients = []
+    header = None
+    for line in content.splitlines():
+        if line.startswith("HEADER,CLIENT_LIST,"):
+            header = line.split(",")[2:]
+            continue
+        if not line.startswith("CLIENT_LIST,"):
+            continue
+        values = line.split(",")[1:]
+        if header and len(values) >= len(header):
+            row = dict(zip(header, values))
+        elif len(values) >= 7:
+            # OpenVPN 2.4 status-version 2 has no virtual IPv6 column.
+            row = {
+                "Common Name": values[0],
+                "Real Address": values[1],
+                "Virtual Address": values[2],
+                "Bytes Received": values[3],
+                "Bytes Sent": values[4],
+                "Connected Since": values[5],
+                "Username": values[7] if len(values) > 7 else values[0],
+            }
         else:
-            # status-version 1 (legacy)
-            in_client_list = False
-            for line in content.splitlines():
-                if "Common Name" in line and "Real Address" in line:
-                    in_client_list = True
-                    continue
-                if "ROUTING TABLE" in line:
-                    in_client_list = False
-                if in_client_list and "," in line:
-                    parts = line.split(",")
-                    if len(parts) >= 4:
-                        clients.append({
-                            "username": parts[0],
-                            "real_ip": parts[1],
-                            "bytes_recv": parts[2],
-                            "bytes_sent": parts[3],
-                            "connected_since": parts[4] if len(parts) > 4 else "",
-                        })
-    except Exception:
-        pass
+            continue
+        username = row.get("Username") or row.get("Common Name") or ""
+        clients.append(_client_row(
+            username,
+            row.get("Real Address", ""),
+            row.get("Virtual Address", ""),
+            row.get("Bytes Received", ""),
+            row.get("Bytes Sent", ""),
+            row.get("Connected Since", ""),
+        ))
+    if clients or "CLIENT_LIST," in content:
+        return clients
+
+    in_clients = False
+    in_routes = False
+    routes = {}
+    for line in content.splitlines():
+        if "ROUTING TABLE" in line or line.startswith("Virtual Address,Common Name"):
+            in_clients = False
+            in_routes = "Virtual Address" in line or False
+            if "ROUTING TABLE" in line and "Virtual Address" not in line:
+                in_routes = False
+            continue
+        if "Common Name" in line and "Real Address" in line and "CLIENT_LIST" not in line:
+            in_clients = True
+            in_routes = False
+            continue
+        if in_routes and "," in line:
+            parts = line.split(",")
+            if len(parts) >= 2:
+                routes[parts[1]] = parts[0]
+            continue
+        if in_clients and "," in line:
+            parts = line.split(",")
+            if len(parts) >= 4 and not parts[0].startswith("HEADER"):
+                clients.append(_client_row(
+                    parts[0], parts[1], routes.get(parts[0], ""),
+                    parts[2], parts[3], parts[4] if len(parts) > 4 else "",
+                ))
+    for client in clients:
+        if not client["virtual_ip"]:
+            client["virtual_ip"] = routes.get(client["username"], "")
     return clients
+
+
+def _read_tail(path, limit=2_000_000):
+    with open(path, "rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        size = handle.tell()
+        handle.seek(max(0, size - limit))
+        data = handle.read().decode("utf-8", "replace")
+    if size > limit:
+        cut = data.find("\n")
+        if cut >= 0:
+            data = data[cut + 1:]
+    return data
+
+
+_LOG_INIT = re.compile(
+    r'(udp4|tcp4|udp6|tcp6):([^:\s]+):(\d+) \[([^\]]+)\] Peer Connection Initiated'
+)
+_LOG_VIP = re.compile(
+    r'primary virtual IP for ([^/\s]+)/(udp4|tcp4|udp6|tcp6):([^:\s]+):(\d+): ([0-9a-fA-F.:]+)'
+)
+_LOG_DEAD = re.compile(
+    r'^([^/\s]+)/(udp4|tcp4|udp6|tcp6):([^:\s]+):(\d+)\s+.*'
+    r'(SIGTERM|SIGUSR1|client-instance exiting|client-instance restarting|'
+    r'Connection reset|Inactivity timeout|Delayed exit|CC-EEN exit)'
+)
+
+
+_LOG_POOL = re.compile(
+    r'^([^/\s]+)/(udp4|tcp4|udp6|tcp6):([^:\s]+):(\d+)\s+'
+    r'MULTI_sva: pool returned IPv4=([0-9.]+)'
+)
+
+
+def _release_virtual_ip(live, virtual, keep):
+    """OpenVPN gives a tunnel address to one client. A later assignment means the previous session is gone."""
+    if not virtual:
+        return
+    for key, row in list(live.items()):
+        if key != keep and row.get("virtual_ip") == virtual:
+            del live[key]
+
+
+def _parse_openvpn_log(content):
+    """Sessions still up, from the OpenVPN log. The log is written immediately; the status file is not."""
+    live = {}
+    for line in content.splitlines():
+        dead = _LOG_DEAD.search(line)
+        if dead:
+            live.pop(dead.group(1, 2, 3, 4), None)
+            continue
+        started = _LOG_INIT.search(line)
+        if started:
+            proto, ip, port, username = started.groups()
+            live[(username, proto, ip, port)] = _client_row(username, ip)
+            continue
+        pool = _LOG_POOL.search(line)
+        if pool:
+            username, proto, ip, port, virtual = pool.groups()
+            key = (username, proto, ip, port)
+            row = live.get(key) or _client_row(username, ip)
+            row["virtual_ip"] = virtual
+            live[key] = row
+            _release_virtual_ip(live, virtual, key)
+            continue
+        vip = _LOG_VIP.search(line)
+        if vip:
+            username, proto, ip, port, virtual = vip.groups()
+            key = (username, proto, ip, port)
+            row = live.get(key) or _client_row(username, ip)
+            row["virtual_ip"] = virtual
+            live[key] = row
+            _release_virtual_ip(live, virtual, key)
+    return list(live.values())
+
+
+def _log_candidate_paths():
+    paths = [
+        "/var/log/fguard-ssl-vpn.log",
+        "/var/log/aegisguard-ssl-vpn.log",
+    ]
+    for conf in (SYSTEMD_CONF, SERVER_CONF):
+        try:
+            with open(conf, encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    parts = line.split()
+                    if parts and parts[0] in ("log-append", "log") and len(parts) > 1:
+                        paths.append(parts[1])
+        except Exception:
+            continue
+    seen = set()
+    unique = []
+    for path in paths:
+        if path and path not in seen:
+            seen.add(path)
+            unique.append(path)
+    return unique
+
+
+def _merge_clients(status_rows, log_rows):
+    used = set()
+    merged = []
+    for log_row in log_rows:
+        match = None
+        for index, status_row in enumerate(status_rows):
+            if index in used:
+                continue
+            if (status_row["username"] == log_row["username"]
+                    and status_row["real_ip"] == log_row["real_ip"]):
+                match = index
+                break
+        if match is None:
+            merged.append(log_row)
+            continue
+        used.add(match)
+        status_row = status_rows[match]
+        merged.append(_client_row(
+            status_row["username"] or log_row["username"],
+            status_row["real_ip"] or log_row["real_ip"],
+            status_row["virtual_ip"] or log_row["virtual_ip"],
+            status_row["bytes_recv"],
+            status_row["bytes_sent"],
+            status_row["connected_since"],
+        ))
+    for index, status_row in enumerate(status_rows):
+        if index not in used:
+            merged.append(status_row)
+    return merged
+
+
+def get_connected_clients():
+    """Connected SSL VPN clients. Reads the status file OpenVPN already writes
+    and, for a session not flushed there yet, the server log. Does not signal
+    or restart OpenVPN."""
+    status_rows = []
+    status_mtime = -1
+    for path in _status_candidate_paths():
+        if not os.path.isfile(path):
+            continue
+        try:
+            modified = os.stat(path).st_mtime
+        except Exception:
+            continue
+        if modified < status_mtime:
+            continue
+        try:
+            parsed = _parse_status_text(_read_tail(path))
+        except Exception:
+            continue
+        status_rows = parsed
+        status_mtime = modified
+    newest_log = None
+    log_mtime = -1
+    for path in _log_candidate_paths():
+        if not os.path.isfile(path):
+            continue
+        try:
+            modified = os.stat(path).st_mtime
+        except Exception:
+            continue
+        if modified >= log_mtime:
+            newest_log = path
+            log_mtime = modified
+    # The status file is rewritten on a timer. A newer log means a session
+    # changed after that rewrite, so fold those sessions in. An older log
+    # must not bring back clients the status file has already dropped.
+    if not newest_log or log_mtime <= status_mtime:
+        return status_rows
+    try:
+        log_rows = _parse_openvpn_log(_read_tail(newest_log))
+    except Exception:
+        return status_rows
+    return _merge_clients(status_rows, log_rows)
 
 
 # ── Per-user client config generation ────────────────────────────────────────

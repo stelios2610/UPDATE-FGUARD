@@ -1,10 +1,8 @@
 {
-  "version": "1.0.28",
-  "date": "2026-11-15",
+  "version": "1.0.29",
+  "date": "2026-11-16",
   "product": "FGUARD",
   "changelog": [
-    "Anti-DDoS, IPS and reputation now block new connections from their own ipsets without touching established VPN or DNS.",
-    "Firewall rules with a specific port or address are installed in their own chains and survive a GeoBlock rebuild. Default deny stays off.",
-    "DHCP relay accepts more than one interface. App Control, QoS, proxy domains, DMZ, syslog, MFA and GRE apply only when you turn them on. L2TP is no longer written as a fake IKEv2 tunnel."
+    "SSL VPN shows the connected client again (name, real address, tunnel address, bytes and since) and refreshes on its own. OpenVPN is not restarted."
   ]
 }
