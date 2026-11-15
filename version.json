@@ -1,8 +1,8 @@
 {
-  "version": "1.0.31",
+  "version": "1.0.32",
   "date": "2026-11-16",
   "product": "FGUARD",
   "changelog": [
-    "The FGUARD shield is shown on the login page, in the sidebar and as the browser icon."
+    "The shield next to FGUARD after login is back to the same size it had before."
   ]
 }
