@@ -123,12 +123,13 @@ def _is_safe_ip(ip):
 def _block_ip(ip, duration):
     if not IS_LINUX or duration <= 0 or _is_safe_ip(ip):
         return
+    from core import live_protect
+    if live_protect.is_protected(ip):
+        return
     with _lock:
         if ip in _blocked_ips:
             return
-        run(["iptables", "-I", "INPUT", "1", "-s", ip,
-             "-m", "comment", "--comment", f"ips_block_{ip}",
-             "-j", "DROP"])
+        live_protect.block_ip("fguard_ips", ip, duration)
         t = threading.Timer(duration, _unblock_ip, args=[ip])
         t.daemon = True
         t.start()
@@ -140,10 +141,8 @@ def _block_ip(ip, duration):
 def _unblock_ip(ip):
     with _lock:
         _blocked_ips.pop(ip, None)
-    if IS_LINUX:
-        run(["iptables", "-D", "INPUT", "-s", ip,
-             "-m", "comment", "--comment", f"ips_block_{ip}",
-             "-j", "DROP"])
+    from core import live_protect
+    live_protect.unblock_ip("fguard_ips", ip)
 
 
 def _check_signatures(conns):
@@ -267,6 +266,15 @@ def _monitor_loop():
                     "local_port": c.laddr.port if c.laddr else 0,
                     "proto":      "TCP" if c.type == 1 else "UDP",
                 })
+            try:
+                from core import live_protect
+                for src, info in live_protect.half_open_counts().items():
+                    if _is_safe_ip(src):
+                        continue
+                    for port in list(info["ports"])[:40]:
+                        conns.append({"remote_ip": src, "local_port": port, "proto": "TCP"})
+            except Exception:
+                pass
             alerts = _check_signatures(conns)
             for alert in alerts:
                 _fire_alert(alert)

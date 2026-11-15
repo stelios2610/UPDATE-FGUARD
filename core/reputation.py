@@ -88,6 +88,11 @@ def update_blocklists():
 
     database.add_log("INFO", details=f"Blocklist updated: {sum(v for v in results.values() if isinstance(v,int))} IPs from {len(FEED_URLS)} feeds")
     _load_blocklist()
+    try:
+        from core import live_protect
+        live_protect.load_reputation(_blocklist_path)
+    except Exception:
+        pass
     return results
 
 
@@ -235,20 +240,21 @@ def _check_ddos(ip, now):
         alert = {"ip": ip, "reason": reason, "timestamp": datetime.now().isoformat()}
         _fire_ddos(alert)
         if IS_LINUX:
-            _block_ip_kernel(ip)
-        threading.Timer(_ddos_config["block_duration"], lambda: _unblock_ddos(ip)).start()
+            _block_ip_kernel(ip, _ddos_config["block_duration"])
+        threading.Timer(_ddos_config["block_duration"], lambda addr=ip: _unblock_ddos(addr)).start()
         return True
     return False
 
 
-def _block_ip_kernel(ip):
-    run(["iptables", "-I", "INPUT", "1", "-s", ip, "-j", "DROP"])
+def _block_ip_kernel(ip, timeout):
+    from core import live_protect
+    live_protect.block_ip("fguard_ddos", ip, timeout)
 
 
 def _unblock_ddos(ip):
     _ddos_blocked.discard(ip)
-    if IS_LINUX:
-        run(["iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"])
+    from core import live_protect
+    live_protect.unblock_ip("fguard_ddos", ip)
 
 
 def clear_ddos_stats():
@@ -260,13 +266,38 @@ def get_ddos_stats():
     return {
         "blocked_count": len(_ddos_blocked),
         "blocked_ips": list(_ddos_blocked),
-        "config": _ddos_config,
+        "config": _public_ddos_config(),
         "tracking_count": len(_rate_tracker),
     }
 
 
+def _public_ddos_config():
+    cfg = dict(_ddos_config)
+    wl = cfg.get("whitelist") or []
+    cfg["whitelist"] = list(wl) if not isinstance(wl, list) else wl
+    return cfg
+
+
+def _load_ddos_config():
+    raw = database.get_setting("ddos_config", "") or ""
+    if not raw:
+        return
+    try:
+        saved = json.loads(raw)
+    except Exception:
+        return
+    if isinstance(saved, dict):
+        _ddos_config.update(saved)
+
+
 def update_ddos_config(**kwargs):
-    _ddos_config.update(kwargs)
+    clean = {}
+    for key in ("enabled", "pps_threshold", "conns_threshold", "syn_threshold",
+                "block_duration", "syn_protection"):
+        if key in kwargs:
+            clean[key] = kwargs[key]
+    _ddos_config.update(clean)
+    database.set_setting("ddos_config", json.dumps(_public_ddos_config()))
 
 
 def get_ddos_blocked():
@@ -274,9 +305,58 @@ def get_ddos_blocked():
 
 
 def unblock_ip(ip):
-    _ddos_blocked.discard(ip)
-    if IS_LINUX:
-        run(["iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"])
+    _unblock_ddos(ip)
+
+
+_ddos_thread_started = False
+
+
+def _ddos_loop():
+    from core import live_protect
+    while True:
+        time.sleep(3)
+        try:
+            if not _ddos_config.get("enabled", True):
+                continue
+            limit = int(_ddos_config.get("conns_threshold") or 100)
+            pps = int(_ddos_config.get("pps_threshold") or 500)
+            trigger = min(pps, limit)
+            if trigger < 40:
+                trigger = 40
+            duration = int(_ddos_config.get("block_duration") or 300)
+            counts = live_protect.half_open_counts()
+            blocked_now = 0
+            for ip, info in counts.items():
+                if info["n"] < trigger or ip in _ddos_blocked:
+                    continue
+                if blocked_now >= 20:
+                    break
+                _ddos_blocked.add(ip)
+                database.add_log(
+                    "THREAT", src_ip=ip, rule_name="Anti-DDoS",
+                    details=f"DDoS blocked: {info['n']} half-open connections",
+                )
+                _block_ip_kernel(ip, duration)
+                threading.Timer(duration, lambda addr=ip: _unblock_ddos(addr)).start()
+                blocked_now += 1
+        except Exception:
+            pass
+
+
+def start_monitor():
+    """Watch conntrack for floods. Nothing is blocked until a threshold is crossed."""
+    global _ddos_thread_started
+    _load_ddos_config()
+    if _ddos_thread_started:
+        return
+    _ddos_thread_started = True
+    from core import live_protect
+    try:
+        live_protect.ensure()
+    except Exception:
+        pass
+    threading.Thread(target=_ddos_loop, daemon=True).start()
+    threading.Thread(target=live_protect.load_reputation, daemon=True).start()
 
 
 # ── Init ──────────────────────────────────────────────────────────────────────

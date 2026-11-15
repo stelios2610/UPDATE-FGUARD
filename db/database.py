@@ -907,6 +907,36 @@ def add_log(action, direction="", protocol="", src_ip="", dst_ip="",
           src_port, dst_port, process, rule_name, details))
     conn.commit()
     conn.close()
+    _forward_syslog(action, src_ip, rule_name, details)
+
+
+def _forward_syslog(action, src_ip, rule_name, details):
+    """Send to configured syslog servers. No servers means this returns immediately."""
+    try:
+        import socket
+        import time
+        cached = getattr(_forward_syslog, "cache", None)
+        now = time.time()
+        if not cached or now - cached[0] > 30:
+            servers = [s for s in get_log_servers() if s.get("enabled")]
+            _forward_syslog.cache = (now, servers)
+        servers = _forward_syslog.cache[1]
+        if not servers:
+            return
+        msg = f"<14>FGUARD {action} {rule_name or ''} {src_ip or ''} {details or ''}"[:900].encode()
+        for srv in servers:
+            host = srv.get("host")
+            port = int(srv.get("port") or 514)
+            if not host:
+                continue
+            if str(srv.get("protocol") or "UDP").upper() == "TCP":
+                with socket.create_connection((host, port), timeout=2) as sock:
+                    sock.sendall(msg + b"\n")
+            else:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    sock.sendto(msg, (host, port))
+    except Exception:
+        pass
 
 
 def get_logs(limit=500, action_filter=None, search=None):

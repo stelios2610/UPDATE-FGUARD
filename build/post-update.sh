@@ -225,3 +225,9 @@ fi
 if [ "$DNSMASQ_RESTART" -eq 1 ]; then
     systemctl try-restart dnsmasq 2>/dev/null || true
 fi
+
+# v1.0.28: the old unit name fails ipset-create and can cycle network.target.
+# The live geoblock unit is fguard-geoblock. Do not stop that one.
+if systemctl list-unit-files 'aegisguard-geoblock.service' --no-legend 2>/dev/null | grep -q aegisguard-geoblock; then
+    systemctl disable --now aegisguard-geoblock.service 2>/dev/null || true
+fi

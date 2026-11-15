@@ -166,9 +166,15 @@ def require_auth(request: Request):
 
 # ── Login / logout logic ──────────────────────────────────────────────────────
 
-def attempt_login(username: str, password: str) -> bool:
+def attempt_login(username: str, password: str, otp: str = "") -> bool:
     stored_user = database.get_setting("admin_username", "admin")
     stored_hash = database.get_setting("admin_password_hash", "")
     if username != stored_user:
         return False
-    return verify_password(password, stored_hash)
+    if not verify_password(password, stored_hash):
+        return False
+    secret = database.get_setting("admin_mfa_secret", "") or ""
+    if not secret:
+        return True
+    from core.mfa import verify_totp
+    return verify_totp(secret, otp or "")

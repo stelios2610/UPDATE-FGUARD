@@ -41,7 +41,12 @@ def scan_file(file_path):
     """Scan a single file with ClamAV. Returns (clean, threat_name)."""
     if not os.path.isfile(file_path):
         return True, ""
-    ok, out, err = run(["clamscan", "--no-summary", file_path], timeout=60)
+    cmd = ["clamscan", "--no-summary", file_path]
+    for sock in ("/run/clamav/clamd.ctl", "/var/run/clamav/clamd.ctl"):
+        if os.path.exists(sock):
+            cmd = ["clamdscan", "--no-summary", "--fdpass", file_path]
+            break
+    ok, out, err = run(cmd, timeout=60)
     _scan_stats["scanned"] += 1
     _scan_stats["last_scan"] = datetime.now().isoformat()
     if not ok:

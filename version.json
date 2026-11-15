@@ -1,8 +1,10 @@
 {
-  "version": "1.0.27",
-  "date": "2026-10-07",
+  "version": "1.0.28",
+  "date": "2026-11-15",
   "product": "FGUARD",
   "changelog": [
-    "Geoblock: country changes apply when the ipset is already in use"
+    "Anti-DDoS, IPS and reputation now block new connections from their own ipsets without touching established VPN or DNS.",
+    "Firewall rules with a specific port or address are installed in their own chains and survive a GeoBlock rebuild. Default deny stays off.",
+    "DHCP relay accepts more than one interface. App Control, QoS, proxy domains, DMZ, syslog, MFA and GRE apply only when you turn them on. L2TP is no longer written as a fake IKEv2 tunnel."
   ]
 }

@@ -352,3 +352,36 @@ def get_hosts_status():
         count = sum(1 for l in content.splitlines() if l.startswith("0.0.0.0"))
         return "active", count
     return "inactive", 0
+
+
+def apply_proxy_dns():
+    """Block proxy-rule domains in dnsmasq. No rules and no file: do not restart DNS."""
+    path = "/etc/dnsmasq.d/fguard-proxy.conf"
+    domains = []
+    for rule in database.get_proxy_rules():
+        if not rule.get("enabled") or (rule.get("action") or "").upper() != "BLOCK":
+            continue
+        pattern = (rule.get("pattern") or "").strip().lower().lstrip(".")
+        if pattern and " " not in pattern and "/" not in pattern and "." in pattern:
+            domains.append(pattern)
+    if not domains:
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
+            try:
+                os.remove(path)
+            except OSError:
+                return False, "Could not remove proxy DNS file"
+            if IS_LINUX:
+                run(["systemctl", "restart", "dnsmasq"])
+        return True, "No proxy domain blocks"
+    lines = ["# FGUARD proxy domain blocks"]
+    for domain in sorted(set(domains)):
+        lines.append(f"address=/{domain}/0.0.0.0")
+        lines.append(f"address=/{domain}/::")
+    try:
+        with open(path, "w") as handle:
+            handle.write("\n".join(lines) + "\n")
+    except OSError as exc:
+        return False, str(exc)
+    if IS_LINUX:
+        run(["systemctl", "restart", "dnsmasq"])
+    return True, f"Blocked {len(set(domains))} proxy domain(s)"

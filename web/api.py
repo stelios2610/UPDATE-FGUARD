@@ -76,6 +76,45 @@ if _IS_LINUX:
         bov_manager.restore_tunnels_on_boot()
     except Exception:
         pass
+    try:
+        bov_manager.refresh_live_status()
+    except Exception:
+        pass
+
+# Policy rules, reputation and DDoS. These use their own chains and ipsets.
+# They do not flush GeoBlock, do not reload StrongSwan and do not restart DNS.
+if _IS_LINUX:
+    try:
+        from core import live_protect
+        live_protect.ensure()
+    except Exception:
+        pass
+    try:
+        rules_engine.sync_all_rules()
+    except Exception:
+        pass
+    try:
+        reputation.start_monitor()
+    except Exception:
+        pass
+    try:
+        network_manager.ensure_nat_rules()
+    except Exception:
+        pass
+    try:
+        app_control.restore_gateway_blocks()
+    except Exception:
+        pass
+    try:
+        if database.get_dmz_configs():
+            network_manager.apply_dmz()
+    except Exception:
+        pass
+    try:
+        if database.get_proxy_rules():
+            web_filter.apply_proxy_dns()
+    except Exception:
+        pass
 
 # Re-apply LAN→WAN MASQUERADE on every startup. VPN NAT is restored below,
 # but LAN masquerade is not rebuilt unless we do it here — after reboot the
@@ -117,6 +156,34 @@ def _log_pruner():
             pass
 
 _threading.Thread(target=_log_pruner, daemon=True).start()
+
+def _task_runner():
+    import time
+    while True:
+        time.sleep(60)
+        try:
+            conn = database.get_connection()
+            rows = conn.execute("SELECT id, action FROM scheduled_tasks WHERE enabled = 1").fetchall()
+            conn.close()
+            if not rows:
+                continue
+            from datetime import datetime as _dt
+            for row in rows:
+                action = (row["action"] or "").strip()
+                if action == "update_blocklist":
+                    reputation.update_blocklists()
+                elif action == "geoblock":
+                    from core import geoblock as _gb
+                    _gb.apply_geoblock()
+                conn = database.get_connection()
+                conn.execute("UPDATE scheduled_tasks SET last_run = ? WHERE id = ?",
+                             (_dt.now().isoformat(), row["id"]))
+                conn.commit()
+                conn.close()
+        except Exception:
+            pass
+
+_threading.Thread(target=_task_runner, daemon=True).start()
 
 # ── 72-hour stats reset ───────────────────────────────────────────────────────
 _RESET_HOURS = 72
@@ -303,13 +370,14 @@ async def login_page(request: Request, error: str = "", next: str = "/"):
 async def login_submit(request: Request,
                        username: str = Form(...),
                        password: str = Form(...),
+                       otp: str = Form(default=""),
                        next: str = Form(default="/")):
     client_ip = request.client.host if request.client else "unknown"
     if is_rate_limited(client_ip):
         return templates.TemplateResponse(request, "login.html",
                                           {"error": "Too many login attempts. Try again later.", "app_version": APP_VERSION},
                                           status_code=429)
-    if attempt_login(username, password):
+    if attempt_login(username, password, otp):
         token = create_session(username)
         # Only allow relative redirects to prevent open redirect attacks
         safe_next = next if (next and next.startswith("/") and not next.startswith("//")) else "/"
@@ -378,7 +446,14 @@ async def vpn_page(request: Request):
     for p in profiles:
         p["live_status"] = vpn_manager.get_status(p["id"]).get("status", "Disconnected")
     bov_tunnels = database.get_bov_tunnels()
-    ssl_config = database.get_ssl_vpn_config()
+    try:
+        bov_manager.refresh_live_status()
+        bov_tunnels = database.get_bov_tunnels()
+    except Exception:
+        pass
+    ssl_config = database.get_ssl_vpn_config() or {}
+    if ssl_vpn.get_server_status() == "Running":
+        ssl_config["status"] = "Running"
     vpn_users = database.get_vpn_users()
     ipsec_sa = get_ipsec_sa()
     return _ctx(request, template="vpn.html",
@@ -578,9 +653,9 @@ async def api_update_rule(rule_id: int, rule: RuleCreate):
 
 @app.delete("/api/rules/{rule_id}")
 async def api_delete_rule(rule_id: int):
-    rule = next((r for r in database.get_rules() if r["id"] == rule_id), None)
-    if rule: rules_engine.remove_rule_from_system(rule)
-    database.delete_rule(rule_id); return {"status": "ok"}
+    database.delete_rule(rule_id)
+    rules_engine.sync_all_rules()
+    return {"status": "ok"}
 
 @app.post("/api/rules/{rule_id}/toggle")
 async def api_toggle_rule(rule_id: int):
@@ -707,15 +782,20 @@ async def api_get_dmz():
 
 @app.post("/api/network/dmz")
 async def api_add_dmz(d: DmzConfig):
-    database.save_dmz_config(**d.model_dump()); return {"status": "ok"}
+    database.save_dmz_config(**d.model_dump())
+    network_manager.apply_dmz()
+    return {"status": "ok"}
 
 @app.put("/api/network/dmz/{did}")
 async def api_update_dmz(did: int, d: DmzConfig):
-    database.save_dmz_config(**d.model_dump()); return {"status": "ok"}
+    database.save_dmz_config(**d.model_dump())
+    network_manager.apply_dmz()
+    return {"status": "ok"}
 
 @app.delete("/api/network/dmz/{did}")
 async def api_del_dmz(did: int):
-    database.delete_dmz_config(did); return {"status": "ok"}
+    database.delete_dmz_config(did)
+    return {"status": "ok"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -903,10 +983,14 @@ async def api_get_qos():
     return database.get_qos_rules()
 @app.post("/api/qos")
 async def api_add_qos(r: QosRule):
-    database.add_qos_rule(**r.model_dump()); return {"status":"ok"}
+    database.add_qos_rule(**r.model_dump())
+    ok, msg = network_manager.apply_qos_rules()
+    return {"status": "ok" if ok else "error", "message": msg}
 @app.delete("/api/qos/{rid}")
 async def api_del_qos(rid: int):
-    database.delete_qos_rule(rid); return {"status":"ok"}
+    database.delete_qos_rule(rid)
+    ok, msg = network_manager.apply_qos_rules()
+    return {"status": "ok" if ok else "error", "message": msg}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1570,9 +1654,14 @@ async def api_get_proxies():
     return database.get_proxy_rules()
 @app.post("/api/proxies")
 async def api_add_proxy(r: ProxyRule):
-    database.add_proxy_rule(**r.model_dump()); return {"status":"ok"}
+    database.add_proxy_rule(**r.model_dump())
+    ok, msg = web_filter.apply_proxy_dns()
+    return {"status": "ok" if ok else "error", "message": msg}
 @app.delete("/api/proxies/{rid}")
-async def api_del_proxy(rid: int): database.delete_proxy_rule(rid); return {"status":"ok"}
+async def api_del_proxy(rid: int):
+    database.delete_proxy_rule(rid)
+    web_filter.apply_proxy_dns()
+    return {"status":"ok"}
 
 @app.post("/api/proxies/{pid}/toggle")
 async def api_toggle_proxy(pid: int):
@@ -1586,6 +1675,7 @@ async def api_toggle_proxy(pid: int):
                   (0 if row["enabled"] else 1, pid))
     conn2.commit()
     conn2.close()
+    web_filter.apply_proxy_dns()
     return {"status": "ok"}
 
 
@@ -1641,6 +1731,33 @@ async def api_change_password(request: Request):
     if not verify_password(current, stored_hash):
         raise HTTPException(401, "Current password is incorrect")
     database.set_setting("admin_password_hash", hash_password(new_pw))
+    return {"status": "ok"}
+
+@app.post("/api/auth/mfa/begin")
+async def api_mfa_begin():
+    secret = mfa.generate_secret()
+    database.set_setting("admin_mfa_pending", secret)
+    return {"secret": secret, "qr_uri": mfa.get_qr_code_uri("admin", secret)}
+
+@app.post("/api/auth/mfa/confirm")
+async def api_mfa_confirm(request: Request):
+    data = await request.json()
+    secret = database.get_setting("admin_mfa_pending", "") or ""
+    if not secret or not mfa.verify_totp(secret, str(data.get("code", ""))):
+        raise HTTPException(400, "Code did not match")
+    database.set_setting("admin_mfa_secret", secret)
+    database.set_setting("admin_mfa_pending", "")
+    return {"status": "ok"}
+
+@app.post("/api/auth/mfa/disable")
+async def api_mfa_disable(request: Request):
+    data = await request.json()
+    from web.auth import verify_password
+    stored_hash = database.get_setting("admin_password_hash", "")
+    if not verify_password(data.get("password", ""), stored_hash):
+        raise HTTPException(401, "Password is incorrect")
+    database.set_setting("admin_mfa_secret", "")
+    database.set_setting("admin_mfa_pending", "")
     return {"status": "ok"}
 
 # Log servers

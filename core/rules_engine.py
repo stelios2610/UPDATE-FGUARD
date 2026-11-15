@@ -160,63 +160,163 @@ def _port_to_iptables(port_str):
     return port_str
 
 
-def _sync_rule_linux(rule):
-    rule_tag = f"--comment fguard_{rule['id']}"
-    # Remove old rule first
-    _remove_rule_linux(rule)
+# User policy lives here so GeoBlock can rebuild FGUARD_INPUT without wiping it.
+RULES_IN = "FGUARD_RULES_IN"
+RULES_OUT = "FGUARD_RULES_OUT"
+RULES_FWD = "FGUARD_RULES_FWD"
+# File sharing between VLANs crosses FORWARD. Do not drop these there.
+_LAN_SHARE_PORTS = {"137", "138", "139", "445", "137:139", "137-139"}
 
-    if not rule["enabled"]:
-        return True, "Disabled"
 
-    action = "ACCEPT" if rule["action"] == "ALLOW" else "DROP"
-    dirs = []
-    if rule["direction"] in ("IN", "BOTH"):
-        dirs.append(("INPUT", rule.get("remote_ip", ""), rule.get("local_ip", ""),
-                     rule.get("remote_port", ""), rule.get("local_port", "")))
-    if rule["direction"] in ("OUT", "BOTH"):
-        dirs.append(("OUTPUT", rule.get("local_ip", ""), rule.get("remote_ip", ""),
-                     rule.get("local_port", ""), rule.get("remote_port", "")))
+def _blank_match(value):
+    return not value or str(value).strip() in ("", "ANY", "*", "0", "0.0.0.0/0", "::/0")
 
-    for chain, src_ip, dst_ip, src_port, dst_port in dirs:
-        ag_chain = f"{CHAIN_PREFIX}_{chain}"
-        args = ["-A", ag_chain]
-        args += _proto_args(rule.get("protocol", "ANY"))
 
-        if src_ip and src_ip not in ("", "ANY", "*"):
-            args += ["-s", src_ip]
-        if dst_ip and dst_ip not in ("", "ANY", "*"):
-            args += ["-d", dst_ip]
+def _service_port(rule):
+    """The port the rule is about, whichever column the GUI stored it in."""
+    local_p = (rule.get("local_port") or "").strip()
+    remote_p = (rule.get("remote_port") or "").strip()
+    if (rule.get("direction") or "") == "OUT":
+        return remote_p or local_p
+    return local_p or remote_p
 
-        proto = rule.get("protocol", "ANY")
-        if proto.upper() in ("TCP", "UDP"):
-            sp = _port_to_iptables(src_port)
-            dp = _port_to_iptables(dst_port)
-            if sp:
-                args += ["--sport", sp]
-            if dp:
-                args += ["--dport", dp]
 
-        args += ["-m", "comment", "--comment", f"fguard_{rule['id']}"]
-        args += ["-j", action]
+def _is_default_deny(rule):
+    name = rule.get("name") or ""
+    if name.startswith("Default Block"):
+        return True
+    port = _service_port(rule)
+    if port or not _blank_match(rule.get("remote_ip")) or not _blank_match(rule.get("local_ip")):
+        return False
+    try:
+        return int(rule.get("priority") or 0) >= 9999
+    except (TypeError, ValueError):
+        return False
 
-        ok, msg = _ipt(args)
+
+def _enforce_default_deny():
+    return database.get_setting("enforce_default_deny", "0") == "1"
+
+
+def _should_install(rule):
+    if not rule.get("enabled"):
+        return False
+    if _is_default_deny(rule):
+        return _enforce_default_deny()
+    if rule.get("action") == "ALLOW" and not _enforce_default_deny():
+        # Under ACCEPT policy an allow does nothing, and a wide allow
+        # installed by mistake would sit in front of later drops.
+        return False
+    return True
+
+
+def _ensure_rule_chains():
+    for chain, parent in ((RULES_IN, "INPUT"), (RULES_OUT, "OUTPUT"), (RULES_FWD, "FORWARD")):
+        _ipt(["-N", chain])
+        ok, _, _ = run(["iptables", "-C", parent, "-j", chain])
         if not ok:
-            return False, msg
+            _ipt(["-A", parent, "-j", chain])
+        ok, _, _ = run([
+            "iptables", "-C", chain, "-m", "state",
+            "--state", "ESTABLISHED,RELATED", "-j", "RETURN",
+        ])
+        if not ok:
+            _ipt(["-I", chain, "1", "-m", "state",
+                  "--state", "ESTABLISHED,RELATED", "-j", "RETURN"])
+
+
+def _rule_chains(rule):
+    direction = rule.get("direction") or "BOTH"
+    port = (_service_port(rule) or "").replace("-", ":")
+    chains = []
+    if direction in ("IN", "BOTH"):
+        chains.append(RULES_IN)
+    if direction in ("OUT", "BOTH"):
+        chains.append(RULES_OUT)
+    share = port in _LAN_SHARE_PORTS or port.startswith("137")
+    if direction == "BOTH" and not share:
+        chains.append(RULES_FWD)
+    return chains
+
+
+def _addrs_for(rule, chain):
+    remote = rule.get("remote_ip") or ""
+    local = rule.get("local_ip") or ""
+    src = dst = None
+    if chain == RULES_OUT:
+        if not _blank_match(local):
+            src = local.strip()
+        if not _blank_match(remote):
+            dst = remote.strip()
+    else:
+        if not _blank_match(remote):
+            src = remote.strip()
+        if not _blank_match(local):
+            dst = local.strip()
+    return src, dst
+
+
+def _append_rule(rule):
+    """Install one enabled rule into the policy chains. Never a catch-all."""
+    port = _port_to_iptables(_service_port(rule))
+    action = "ACCEPT" if rule.get("action") == "ALLOW" else "DROP"
+    proto = (rule.get("protocol") or "ANY").upper()
+    if proto in ("TCP", "UDP", "ICMP"):
+        protos = [proto.lower()]
+    elif port:
+        protos = ["tcp", "udp"]
+    else:
+        protos = [None]
+    comment = f"fguard_{rule['id']}"
+    installed = False
+    for chain in _rule_chains(rule):
+        src, dst = _addrs_for(rule, chain)
+        if not port and not src and not dst and action == "DROP" and not _enforce_default_deny():
+            continue
+        iface = (rule.get("interface") or "").strip()
+        for proto_name in protos:
+            args = ["-A", chain]
+            if proto_name:
+                args += ["-p", proto_name]
+            if src:
+                args += ["-s", src]
+            if dst:
+                args += ["-d", dst]
+            if iface and iface not in ("ANY", "*"):
+                args += ["-o" if chain == RULES_OUT else "-i", iface]
+            if port and proto_name in ("tcp", "udp"):
+                args += ["--dport", port]
+            args += ["-m", "comment", "--comment", comment, "-j", action]
+            ok, msg = _ipt(args)
+            if not ok:
+                return False, msg
+            installed = True
+    return True, "OK" if installed else "Stored"
+
+
+def _install_deny_guards():
+    """Allow the firewall to keep working if default deny is explicitly on."""
+    guards = [
+        ["-p", "udp", "-m", "multiport", "--dports", "53,67,68,123,500,4500,1194,51820", "-j", "RETURN"],
+        ["-p", "tcp", "-m", "multiport", "--dports", "53,22,80,443,8080,8888", "-j", "RETURN"],
+        ["-p", "icmp", "-j", "RETURN"],
+        ["-p", "esp", "-j", "RETURN"],
+        ["-p", "ah", "-j", "RETURN"],
+        ["-p", "gre", "-j", "RETURN"],
+    ]
+    for chain in (RULES_IN, RULES_OUT, RULES_FWD):
+        for guard in guards:
+            _ipt(["-A", chain] + guard)
+
+
+def _sync_rule_linux(rule):
+    """Rebuild the policy chains from the database so one save cannot stack duplicates."""
+    sync_all_rules()
     return True, "OK"
 
 
 def _remove_rule_linux(rule):
-    tag = f"fguard_{rule['id']}"
-    for chain in (f"{CHAIN_PREFIX}_INPUT", f"{CHAIN_PREFIX}_OUTPUT", f"{CHAIN_PREFIX}_FORWARD"):
-        while True:
-            ok, out, _ = run(["iptables", "-L", chain, "--line-numbers", "-n"])
-            if not ok:
-                break
-            lines = [l for l in out.splitlines() if tag in l]
-            if not lines:
-                break
-            num = lines[0].split()[0]
-            _ipt(["-D", chain, num])
+    sync_all_rules()
     return True, "OK"
 
 
@@ -343,13 +443,32 @@ def remove_rule_from_windows(rule):
 
 
 def sync_all_rules():
-    if IS_LINUX:
-        _ensure_chains()
+    """Install enabled, specific firewall rules.
+
+    Default Block All stays off unless settings.enforce_default_deny is 1.
+    Turning that on with the current rule list would drop DNS, DHCP and ESP.
+    GeoBlock's FGUARD_INPUT chain is not flushed.
+    """
+    if not IS_LINUX:
+        rules = database.get_rules()
+        return [(r["name"],) + sync_rule_to_windows(r) for r in rules]
+    _ensure_chains()
+    _ensure_rule_chains()
+    for chain in (RULES_IN, RULES_OUT, RULES_FWD):
+        _ipt(["-F", chain])
+        _ipt(["-A", chain, "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "RETURN"])
     rules = database.get_rules()
+    deny = [r for r in rules if _should_install(r) and _is_default_deny(r)]
+    specific = [r for r in rules if _should_install(r) and not _is_default_deny(r)]
     results = []
-    for rule in rules:
-        ok, msg = sync_rule_to_system(rule)
+    for rule in specific:
+        ok, msg = _append_rule(rule)
         results.append((rule["name"], ok, msg))
+    if deny:
+        _install_deny_guards()
+        for rule in deny:
+            ok, msg = _append_rule(rule)
+            results.append((rule["name"], ok, msg))
     return results
 
 
@@ -385,7 +504,8 @@ def setup_router_mode(wan_iface, lan_iface):
 def flush_all_rules():
     """Remove all FGUARD rules from the system."""
     if IS_LINUX:
-        for chain in (f"{CHAIN_PREFIX}_INPUT", f"{CHAIN_PREFIX}_OUTPUT", f"{CHAIN_PREFIX}_FORWARD"):
+        for chain in (f"{CHAIN_PREFIX}_INPUT", f"{CHAIN_PREFIX}_OUTPUT", f"{CHAIN_PREFIX}_FORWARD",
+                      RULES_IN, RULES_OUT, RULES_FWD):
             _ipt(["-F", chain])
         return True, "Flushed"
     return False, "Use Windows FW panel to reset"

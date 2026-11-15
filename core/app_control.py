@@ -204,7 +204,30 @@ def _remove_app_rule_linux(app_rule):
     return True, "OK"
 
 
+def _gateway_app(app_rule):
+    """Map a saved exe rule onto a gateway block. None if it is not one of those apps."""
+    blob = f"{app_rule.get('name', '')} {app_rule.get('exe_path', '')}".lower()
+    for key, app in (
+        ("anydesk", "AnyDesk"),
+        ("teamviewer", "TeamViewer"),
+        ("qbittorrent", "Torrent"),
+        ("utorrent", "Torrent"),
+        ("bittorrent", "Torrent"),
+        ("transmission", "Torrent"),
+        ("deluge", "Torrent"),
+    ):
+        if key in blob:
+            return app
+    return None
+
+
 def sync_app_rule_linux(app_rule):
+    app = _gateway_app(app_rule)
+    if app:
+        if app_rule.get("enabled") and (app_rule.get("action") or "").upper() == "BLOCK":
+            return apply_app_block(app)
+        return remove_app_block(app)
+
     _remove_app_rule_linux(app_rule)
 
     if not app_rule["enabled"]:
@@ -304,6 +327,15 @@ def sync_all_app_rules():
         ok, msg = sync_app_rule(rule)
         results.append((rule["name"], ok, msg))
     return results
+
+
+def restore_gateway_blocks():
+    """Re-apply gateway blocks that were already turned on. Does not enable new ones."""
+    if not IS_LINUX:
+        return
+    for name in PREDEFINED_APPS:
+        if database.get_setting(f"appblock_{name}") == "1":
+            apply_app_block(name)
 
 
 def get_running_apps():

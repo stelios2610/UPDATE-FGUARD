@@ -264,11 +264,11 @@ def write_dhcp_config():
         except Exception:
             pass
         lines.append(f"rev-server=192.168.0.0/24,{sip}")
-        relay_if = (relay_cfg.get("interfaces") or "").split(",")[0].strip()
-        if relay_if:
+        raw_ifaces = (relay_cfg.get("interfaces") or "").split(",")
+        for relay_if in [item.strip() for item in raw_ifaces if item.strip()]:
             rif, rip = _resolve_relay_iface(relay_if)
-            if rip:
-                # Replies come via IPSec (ens1), so do not pass a third
+            if rip and rif not in relay_ifaces:
+                # Replies come via IPSec, so do not pass a third
                 # interface name — that would drop OFFERs not seen on LAN.
                 # Never use dhcp-range=...,relay (invalid IPv4 on 2.92).
                 lines.append(f"dhcp-relay={rip},{sip}")
@@ -539,6 +539,68 @@ def apply_nat_rules():
     return True, f"Applied {sum(1 for _,ok,_ in results if ok)}/{len(results)} NAT rules"
 
 
+def ensure_nat_rules():
+    """Add enabled DNAT rules that are not already in PREROUTING.
+
+    Existing forwards are left as they are. Nothing is deleted.
+    """
+    if not IS_LINUX:
+        return True, "NAT is Linux only"
+    listing = ""
+    ok, out, _ = run(["iptables", "-t", "nat", "-S", "PREROUTING"], timeout=8)
+    if ok:
+        listing = out
+    added = 0
+    for rule in database.get_nat_rules():
+        if not rule.get("enabled") or rule.get("type") != "DNAT":
+            continue
+        dport = str(rule.get("external_port") or "").strip()
+        dest = (rule.get("internal_ip") or "").strip()
+        if rule.get("internal_port"):
+            dest = f"{dest}:{rule['internal_port']}"
+        proto = (rule.get("protocol") or "tcp").lower()
+        if not dport or not dest or dest.startswith(":"):
+            continue
+        present = False
+        for line in listing.splitlines():
+            if "DNAT" in line and f"--dport {dport}" in line and dest in line:
+                present = True
+                break
+        if present:
+            continue
+        args = ["iptables", "-t", "nat", "-A", "PREROUTING", "-p", proto,
+                "--dport", dport, "-m", "comment", "--comment", f"fguard_nat_{rule['id']}",
+                "-j", "DNAT", "--to-destination", dest]
+        if rule.get("interface"):
+            args[5:5] = ["-i", rule["interface"]]
+        ok_add, _, _ = run(args)
+        if ok_add:
+            added += 1
+            listing += f"\n-A PREROUTING -p {proto} --dport {dport} -j DNAT --to-destination {dest}"
+    return True, f"DNAT ensured, added {added}"
+
+
+def apply_dmz():
+    """Drop DMZ-to-LAN forwarding when a DMZ row exists. No rows, no iptables changes."""
+    if not IS_LINUX:
+        return True, "DMZ is Linux only"
+    cfgs = [c for c in database.get_dmz_configs() if c.get("enabled", 1) and c.get("block_dmz_to_lan", 1)]
+    if not cfgs:
+        return True, "No DMZ"
+    for cfg in cfgs:
+        iface = (cfg.get("interface") or "").strip()
+        if not iface:
+            continue
+        for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"):
+            check = ["iptables", "-C", "FORWARD", "-i", iface, "-d", net,
+                     "-m", "comment", "--comment", "fguard_dmz", "-j", "DROP"]
+            ok, _, _ = run(check)
+            if not ok:
+                run(["iptables", "-A", "FORWARD", "-i", iface, "-d", net,
+                     "-m", "comment", "--comment", "fguard_dmz", "-j", "DROP"])
+    return True, "DMZ applied"
+
+
 def _apply_static_nat(rule):
     """1-to-1 Static NAT: public_ip <-> private_ip (bidirectional)."""
     public_ip  = rule.get("external_ip", "").strip()
@@ -589,15 +651,29 @@ def remove_static_nat(rule):
 
 # ─── QoS (tc - Linux Traffic Control) ────────────────────────────────────────
 
-def apply_qos_rules(interface="eth0"):
-    """Apply QoS/traffic shaping via tc (Linux only)."""
+def apply_qos_rules(interface=None):
+    """Apply QoS/traffic shaping via tc (Linux only).
+
+    Does not replace a CAKE qdisc. Keratsini already shapes with CAKE and
+    replacing that root qdisc would change the live link.
+    """
     if not IS_LINUX:
         return False, "QoS is Linux only"
-    rules = database.get_qos_rules()
+    rules = [r for r in database.get_qos_rules() if r.get("enabled")]
     if not rules:
         return True, "No QoS rules"
+    if not interface:
+        ok, out, _ = run(["ip", "route", "show", "default"])
+        interface = "eth0"
+        if ok and " dev " in f" {out} ":
+            parts = out.split()
+            if "dev" in parts:
+                interface = parts[parts.index("dev") + 1]
+    ok, current, _ = run(["tc", "qdisc", "show", "dev", interface])
+    if ok and "cake" in current:
+        return True, f"CAKE is already shaping {interface}. The QoS rule is saved and was not applied over CAKE."
 
-    # Clear existing
+    # Clear existing HTB only. cake was refused above.
     run(["tc", "qdisc", "del", "dev", interface, "root"])
     # Add HTB root
     run(["tc", "qdisc", "add", "dev", interface, "root", "handle", "1:", "htb", "default", "30"])
@@ -820,23 +896,29 @@ def apply_dhcp_relay():
     if not interfaces:
         return False, "DHCP Relay: no interfaces configured"
 
-    # Use the first configured interface as the relay interface.
-    # VLAN trunks (eth1) often have no IPv4 — the address is on eth1.10 etc.
-    relay_if = interfaces.split(",")[0].strip()
-    resolved_if, resolved_ip = _resolve_relay_iface(relay_if)
-    if not resolved_ip:
-        return False, f"DHCP Relay: {relay_if} has no IPv4 (use the VLAN iface, e.g. eth1.10)"
-    if resolved_if != relay_if:
-        relay_if = resolved_if
-        database.save_dhcp_relay(1, server_ip, relay_if)
+    # One dhcp-relay line per interface. A single interface stays one line.
+    names = [item.strip() for item in interfaces.split(",") if item.strip()]
+    resolved = []
+    for relay_if in names:
+        resolved_if, resolved_ip = _resolve_relay_iface(relay_if)
+        if not resolved_ip:
+            continue
+        if resolved_if not in [item[0] for item in resolved]:
+            resolved.append((resolved_if, resolved_ip))
+    if not resolved:
+        return False, f"DHCP Relay: {interfaces} has no IPv4 (use the VLAN iface, e.g. eth1.10)"
+    shown = ",".join(item[0] for item in resolved)
+    if shown != interfaces:
+        database.save_dhcp_relay(1, server_ip, shown)
 
     # Ensure relay script and unit are installed
     ok, err = _install_relay_service()
     if not ok:
         return False, f"Cannot install relay service: {err}"
 
-    # Write config consumed by the systemd EnvironmentFile
-    relay_conf = f'RELAY_IF="{relay_if}"\nDHCP_SRV="{server_ip}"\n'
+    relay_conf = "\n".join(
+        f'RELAY_IF="{item[0]}"\nDHCP_SRV="{server_ip}"' for item in resolved
+    ) + "\n"
     try:
         with open(_RELAY_CONF, "w") as f:
             f.write(relay_conf)
@@ -851,8 +933,8 @@ def apply_dhcp_relay():
     run(["systemctl", "disable", _RELAY_SERVICE])
     ok, dns_state, _ = run(["systemctl", "is-active", "dnsmasq"])
     if ok and dns_state.strip() == "active":
-        database.add_log("INFO", details=f"DHCP Relay via dnsmasq → {server_ip} on {relay_if}")
-        return True, f"DHCP Relay active via dnsmasq → {server_ip} on {relay_if}"
+        database.add_log("INFO", details=f"DHCP Relay via dnsmasq → {server_ip} on {shown}")
+        return True, f"DHCP Relay active via dnsmasq → {server_ip} on {shown}"
 
     run(["systemctl", "enable", _RELAY_SERVICE])
     ok, _, err = run(["systemctl", "restart", _RELAY_SERVICE])

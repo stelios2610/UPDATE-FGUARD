@@ -95,6 +95,19 @@
       </div>
       <button class="btn btn-warning" onclick="changePassword()">Change Password</button>
     </div>
+    <div class="card" style="margin-top:16px">
+      <div class="card-header">
+        <div class="card-title">Authenticator</div>
+        <div class="card-sub">Off until you confirm a code. Login stays password-only until then.</div>
+      </div>
+      <button class="btn btn-secondary" onclick="beginMFA()">Set up MFA</button>
+      <div id="mfa-setup" style="display:none;margin-top:12px">
+        <div class="font-mono" id="mfa-secret" style="font-size:13px;margin-bottom:8px"></div>
+        <input class="form-control" id="mfa-code" placeholder="6-digit code" style="max-width:200px">
+        <button class="btn btn-primary" style="margin-top:8px" onclick="confirmMFA()">Confirm</button>
+      </div>
+      <button class="btn btn-secondary" style="margin-top:8px" onclick="disableMFA()">Turn MFA off</button>
+    </div>
   </div>
 
   <div class="card" style="margin-top:16px">
@@ -789,6 +802,29 @@ async function changePassword() {
     document.getElementById('pw-new').value = '';
     document.getElementById('pw-confirm').value = '';
     document.getElementById('pw-strength-bar').style.width = '0%';
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function beginMFA() {
+  try {
+    const r = await POST('/api/auth/mfa/begin', {});
+    document.getElementById('mfa-setup').style.display = 'block';
+    document.getElementById('mfa-secret').textContent = r.secret || '';
+    toast('Add this secret to your authenticator, then confirm', 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+async function confirmMFA() {
+  try {
+    await POST('/api/auth/mfa/confirm', { code: document.getElementById('mfa-code').value });
+    toast('MFA is on. The next login needs the code.', 'success');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+async function disableMFA() {
+  const password = document.getElementById('pw-current').value;
+  if (!password) { toast('Enter the current password above first', 'error'); return; }
+  try {
+    await POST('/api/auth/mfa/disable', { password });
+    toast('MFA is off', 'success');
   } catch (e) { toast('Error: ' + e.message, 'error'); }
 }
 

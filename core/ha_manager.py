@@ -245,10 +245,12 @@ _sync_running = False
 
 
 def start_sync():
-    """Start background config sync thread (MASTER only)."""
+    """Start background config sync thread (MASTER only, and only when HA is on)."""
     global _sync_thread, _sync_running
     cfg = database.get_ha_config()
-    if not cfg.get("sync_enabled") or cfg.get("role") != "MASTER":
+    if not cfg.get("enabled") or not cfg.get("sync_enabled") or cfg.get("role") != "MASTER":
+        return
+    if not (cfg.get("sync_peer") or cfg.get("peer_ip")):
         return
     if _sync_running:
         return
@@ -272,17 +274,23 @@ def sync_now():
 
 
 def _do_sync(peer_ip):
-    """Rsync FGUARD config and database to peer."""
+    """Rsync FGUARD config and database to the peer.
+
+    Copies the directory this process is running from. Live boxes use
+    /opt/aegisguard. --delete is not used, so a peer is never wiped.
+    """
     if not IS_LINUX:
         return False, "Sync requires Linux"
-
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if not base.endswith("/"):
+        base += "/"
     ok, _, err = run([
-        "rsync", "-az", "--delete",
+        "rsync", "-az",
         "--exclude=*.pyc", "--exclude=__pycache__",
         "--exclude=build/iso-work", "--exclude=build/*.iso",
         "-e", "ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5",
-        "/opt/fguard/",
-        f"root@{peer_ip}:/opt/fguard/"
+        base,
+        f"root@{peer_ip}:{base}"
     ], timeout=60)
 
     if ok:

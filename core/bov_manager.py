@@ -159,7 +159,7 @@ def pin_ipsec_nat_rules():
         return
     tunnels = [
         t for t in database.get_bov_tunnels()
-        if t.get("enabled", 1) and t.get("type") in ("IKEv2", "IKEv1", "L2TP-IPSec")
+        if t.get("enabled", 1) and t.get("type") in ("IKEv2", "IKEv1")
     ]
     vpn_net = _vpn_cidr()
     for t in reversed(tunnels):
@@ -217,7 +217,7 @@ def apply_ipsec_tunnels():
              "strongswan", "strongswan-swanctl", "charon-systemd"], timeout=180)
 
     tunnels = database.get_bov_tunnels()
-    ipsec_tunnels = [t for t in tunnels if t["type"] in ("IKEv2", "IKEv1", "L2TP-IPSec")]
+    ipsec_tunnels = [t for t in tunnels if t["type"] in ("IKEv2", "IKEv1")]
     if not ipsec_tunnels:
         return True, "No IPSec tunnels to apply"
 
@@ -443,21 +443,67 @@ def _check_ssl_up(tunnel, proc):
 # Generic connect/disconnect dispatcher
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _wan_address():
+    ok, out, _ = run(["ip", "route", "get", "1.1.1.1"])
+    if not ok:
+        return ""
+    parts = out.split()
+    if "src" in parts:
+        return parts[parts.index("src") + 1]
+    return ""
+
+
+def _route_connected(cidr):
+    ok, out, _ = run(["ip", "route", "show", cidr])
+    return bool(ok and ("proto kernel" in out or "scope link" in out))
+
+
+def apply_gre_tunnel(tunnel):
+    """Unnumbered GRE. Does not reload StrongSwan. Skips subnets that are already local."""
+    if not IS_LINUX:
+        return False, "GRE requires Linux"
+    remote = (tunnel.get("remote_gateway") or "").strip()
+    if not remote:
+        return False, "GRE needs a remote gateway"
+    local = (tunnel.get("local_gateway") or "").strip()
+    if not local or local in ("0.0.0.0", "any"):
+        local = _wan_address()
+    if not local:
+        return False, "GRE needs a local address"
+    name = f"gre{int(tunnel['id'])}"
+    run(["ip", "link", "del", name])
+    ok, _, err = run(["ip", "link", "add", name, "type", "gre",
+                      "local", local, "remote", remote, "ttl", "64"])
+    if not ok:
+        return False, err or "GRE create failed"
+    run(["ip", "link", "set", name, "up"])
+    for net in _subnet_list(tunnel.get("remote_subnets")):
+        if _route_connected(net):
+            continue
+        run(["ip", "route", "replace", net, "dev", name])
+    database.update_bov_tunnel(tunnel["id"], status="Up")
+    return True, f"GRE {name} up"
+
+
 def connect_tunnel(tunnel):
     t = tunnel["type"]
-    if t in ("IKEv2", "IKEv1", "L2TP-IPSec"):
+    if t in ("IKEv2", "IKEv1"):
         apply_ipsec_tunnels()
         return connect_ipsec_tunnel(tunnel)
     elif t == "WireGuard":
         return apply_wireguard_tunnel(tunnel)
     elif t == "SSL-OpenVPN":
         return apply_ssl_site_tunnel(tunnel)
+    elif t == "GRE":
+        return apply_gre_tunnel(tunnel)
+    elif t == "L2TP-IPSec":
+        return False, "L2TP is not started. It is no longer written as an IKEv2 tunnel, so the working IPSec tunnel is left alone."
     return False, f"Protocol {t} not yet implemented"
 
 
 def disconnect_tunnel(tunnel):
     t = tunnel["type"]
-    if t in ("IKEv2", "IKEv1", "L2TP-IPSec"):
+    if t in ("IKEv2", "IKEv1"):
         return disconnect_ipsec_tunnel(tunnel)
     elif t == "WireGuard":
         return disconnect_wireguard_tunnel(tunnel)
@@ -467,13 +513,19 @@ def disconnect_tunnel(tunnel):
             proc.terminate()
         database.update_bov_tunnel(tunnel["id"], status="Down")
         return True, "Disconnected"
+    elif t == "GRE":
+        run(["ip", "link", "del", f"gre{int(tunnel['id'])}"])
+        database.update_bov_tunnel(tunnel["id"], status="Down")
+        return True, "GRE removed"
+    elif t == "L2TP-IPSec":
+        return False, "L2TP is not running"
     return False, f"Protocol {t} not supported"
 
 
 def delete_tunnel(tunnel):
     """Called on UI delete: disconnect AND remove all config files from disk."""
     t = tunnel["type"]
-    if t in ("IKEv2", "IKEv1", "L2TP-IPSec"):
+    if t in ("IKEv2", "IKEv1"):
         return delete_ipsec_tunnel(tunnel)
     elif t == "WireGuard":
         return delete_wireguard_tunnel(tunnel)
@@ -539,7 +591,7 @@ def restore_tunnels_on_boot():
 
     # IPSec: ensure conf files exist on disk — StrongSwan auto-connects via start_action=start
     ipsec_tunnels = [t for t in tunnels
-                     if t["type"] in ("IKEv2", "IKEv1", "L2TP-IPSec") and t.get("enabled", 1)]
+                     if t["type"] in ("IKEv2", "IKEv1") and t.get("enabled", 1)]
     if ipsec_tunnels:
         os.makedirs(SWANCTL_CONF_DIR, exist_ok=True)
         wrote = False
@@ -561,7 +613,28 @@ def restore_tunnels_on_boot():
     for t in wg_tunnels:
         apply_wireguard_tunnel(t)
 
+    for t in tunnels:
+        if t.get("type") == "GRE" and t.get("enabled", 1):
+            apply_gre_tunnel(t)
+
     prefer_ipsec_routes_over_wireguard()
+
+
+def refresh_live_status():
+    """Mark an IKEv2 tunnel Up when swanctl already has it ESTABLISHED.
+
+    Does not reload StrongSwan and does not mark a tunnel Down.
+    """
+    ok, out, _ = run(["swanctl", "--list-sas"], timeout=8)
+    if not ok or not out:
+        return
+    for tunnel in database.get_bov_tunnels():
+        if tunnel.get("type") not in ("IKEv2", "IKEv1"):
+            continue
+        name = (tunnel.get("name") or "").replace(" ", "_")
+        up = any(line.startswith(name + ":") and "ESTABLISHED" in line for line in out.splitlines())
+        if up and tunnel.get("status") != "Up":
+            database.update_bov_tunnel(tunnel["id"], status="Up")
 
 
 def get_tunnel_status(tunnel_id):
