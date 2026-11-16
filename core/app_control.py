@@ -448,30 +448,11 @@ def _remove_app_rule_linux(app_rule):
     return True, "OK"
 
 
-def _gateway_app(app_rule):
-    """Map a saved exe rule onto a gateway block. None if it is not one of those apps."""
-    blob = f"{app_rule.get('name', '')} {app_rule.get('exe_path', '')}".lower()
-    for key, app in (
-        ("anydesk", "AnyDesk"),
-        ("teamviewer", "TeamViewer"),
-        ("qbittorrent", "Torrent"),
-        ("utorrent", "Torrent"),
-        ("bittorrent", "Torrent"),
-        ("transmission", "Torrent"),
-        ("deluge", "Torrent"),
-    ):
-        if key in blob:
-            return app
-    return None
-
-
 def sync_app_rule_linux(app_rule):
-    app = _gateway_app(app_rule)
-    if app:
-        if app_rule.get("enabled") and (app_rule.get("action") or "").upper() == "BLOCK":
-            return apply_app_block(app)
-        return remove_app_block(app)
-
+    # An .exe path is a program on this machine. Sync must not turn a gateway
+    # block on or off. That switch is Quick App Block. The seeded TeamViewer,
+    # AnyDesk and torrent rules are enabled, and following them used to block
+    # TeamViewer for the whole network.
     _remove_app_rule_linux(app_rule)
 
     if not app_rule["enabled"]:

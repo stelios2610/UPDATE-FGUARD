@@ -1,9 +1,8 @@
 {
-  "version": "1.0.35",
+  "version": "1.0.36",
   "date": "2026-11-16",
   "product": "FGUARD",
   "changelog": [
-    "A blocked AnyDesk can no longer leave the LAN on its own port 6568. Port 80 drops only a packet that carries the AnyDesk name.",
-    "The rest of the web stays on the same path. Clearing the block removes only that app."
+    "Sync no longer turns TeamViewer, AnyDesk or torrents on. Quick App Block stays the only switch, and the blocks already saved stay as they are."
   ]
 }
