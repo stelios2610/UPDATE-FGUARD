@@ -1,9 +1,9 @@
 {
-  "version": "1.0.34",
+  "version": "1.0.35",
   "date": "2026-11-16",
   "product": "FGUARD",
   "changelog": [
-    "Application Control stops the connection of a blocked app, not only its website. Other internet traffic stays on the same path.",
-    "Clearing the block removes only that app. The choice stays after a reboot."
+    "A blocked AnyDesk can no longer leave the LAN on its own port 6568. Port 80 drops only a packet that carries the AnyDesk name.",
+    "The rest of the web stays on the same path. Clearing the block removes only that app."
   ]
 }

@@ -36,7 +36,9 @@ PREDEFINED_APPS = {
         "description": "Remote desktop access tool",
         "icon": "🖥",
         "domains": ["anydesk.com", "relay.anydesk.com", "net.anydesk.com", "static.anydesk.com"],
-        "ports": [("tcp", 7070), ("udp", 7070)],
+        "ports": [("tcp", 7070), ("udp", 7070), ("tcp", 6568)],
+        # Port 80 stays open for the web. Only a packet that carries the name is dropped.
+        "name_ports": [80],
         # AnyDesk's own relay ranges. Shared Cloudflare addresses are not listed.
         "ip_ranges": ["195.211.220.0/23", "194.165.82.0/24", "194.165.16.0/24"],
     },
@@ -183,13 +185,22 @@ def chain_rules(enabled_names):
             rules.append([
                 "-d", cidr, "-m", "comment", "--comment", comment, "-j", "DROP",
             ])
-        for needle in sni_names(cfg.get("domains", [])):
-            rules.append([
-                "-p", "tcp", "--dport", "443",
-                "-m", "string", "--string", needle, "--algo", "bm",
-                *_CONNBYTES,
-                "-m", "comment", "--comment", comment, "-j", "DROP",
-            ])
+        name_ports = [443]
+        for port in cfg.get("name_ports", []):
+            try:
+                port = int(port)
+            except (TypeError, ValueError):
+                continue
+            if port not in name_ports and port not in (53, 853):
+                name_ports.append(port)
+        for port in name_ports:
+            for needle in sni_names(cfg.get("domains", [])):
+                rules.append([
+                    "-p", "tcp", "--dport", str(port),
+                    "-m", "string", "--string", needle, "--algo", "bm",
+                    *_CONNBYTES,
+                    "-m", "comment", "--comment", comment, "-j", "DROP",
+                ])
     rules.append(["-j", "RETURN"])
     return rules
 

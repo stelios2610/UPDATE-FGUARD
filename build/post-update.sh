@@ -242,7 +242,8 @@ if [ -x "${BASE_DIR}/venv/bin/python" ]; then
     fi
 fi
 
-# ── v1.0.34: Application Control matches the app, then returns everything else ─
+# ── v1.0.35: AnyDesk's own port is dropped. Port 80 drops only its name. ─
+# v1.0.34: Application Control matches the app, then returns everything else.
 # Rebuilds only blocks that are already on. Does not restart DNS when the
 # file is unchanged, and does not enable a new application.
 if [ -x "${BASE_DIR}/venv/bin/python" ]; then
