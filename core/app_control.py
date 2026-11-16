@@ -6,9 +6,9 @@ from db import database
 from core.platform import IS_LINUX, run
 
 # ─── Predefined app blocks (gateway-level) ────────────────────────────────────
-# The chain is jumped only for LAN → WAN, ahead of the accept that lets the
-# LAN out. Anything that is not one of these apps returns to that path.
-# TCP 443 is dropped only when the packet carries that app's name.
+# The chain is jumped for every LAN interface toward the WAN. A private
+# destination returns, so VPN and the other site stay on the same path.
+# A packet is dropped when it uses the app's port, address, or name.
 
 APPBLOCK_DNSMASQ = "/etc/dnsmasq.d/fguard-appblock.conf"
 APPBLOCK_CHAIN = "FGUARD_APPBLK"
@@ -22,14 +22,21 @@ _CONNBYTES = [
     "-m", "connbytes", "--connbytes", "1:8",
     "--connbytes-dir", "original", "--connbytes-mode", "packets",
 ]
+# Destination only. A source match on 10.16.0.0/24 let every Tavros LAN
+# client through before the app rules were checked.
 _BYPASS = [
     ["-i", "tun0", "-j", "RETURN"],
     ["-o", "tun0", "-j", "RETURN"],
-    ["-d", "10.16.0.0/24", "-j", "RETURN"],
-    ["-s", "10.16.0.0/24", "-j", "RETURN"],
-    ["-d", "10.8.0.0/24", "-j", "RETURN"],
-    ["-s", "10.8.0.0/24", "-j", "RETURN"],
+    ["-i", "wg0", "-j", "RETURN"],
+    ["-o", "wg0", "-j", "RETURN"],
+    ["-d", "10.0.0.0/8", "-j", "RETURN"],
+    ["-d", "172.16.0.0/12", "-j", "RETURN"],
+    ["-d", "192.168.0.0/16", "-j", "RETURN"],
 ]
+_SKIP_PREFIXES = (
+    "lo", "tun", "wg", "docker", "veth", "br-", "virbr", "dummy",
+    "vti", "ipsec", "gre", "ppp", "ifb",
+)
 
 PREDEFINED_APPS = {
     "AnyDesk": {
@@ -194,13 +201,14 @@ def chain_rules(enabled_names):
             if port not in name_ports and port not in (53, 853):
                 name_ports.append(port)
         for port in name_ports:
-            for needle in sni_names(cfg.get("domains", [])):
-                rules.append([
-                    "-p", "tcp", "--dport", str(port),
-                    "-m", "string", "--string", needle, "--algo", "bm",
-                    *_CONNBYTES,
-                    "-m", "comment", "--comment", comment, "-j", "DROP",
-                ])
+            protos = ("tcp", "udp") if port == 443 else ("tcp",)
+            for proto in protos:
+                for needle in sni_names(cfg.get("domains", [])):
+                    rules.append([
+                        "-p", proto, "--dport", str(port),
+                        "-m", "string", "--string", needle, "--algo", "bm",
+                        "-m", "comment", "--comment", comment, "-j", "DROP",
+                    ])
     rules.append(["-j", "RETURN"])
     return rules
 
@@ -279,30 +287,52 @@ def _wan_iface():
     return ""
 
 
+def _remember(found, name):
+    name = (name or "").strip()
+    if name and name not in found:
+        found.append(name)
+
+
+def _live_ifaces():
+    ok, out, _ = run(["ip", "-o", "link", "show"])
+    if not ok:
+        return []
+    names = []
+    for line in out.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) < 2:
+            continue
+        _remember(names, parts[1].strip().split("@")[0])
+    return names
+
+
 def _lan_ifaces():
+    """Every interface the PCs use, including a second LAN and an optional VLAN."""
     found = []
+    wan = _wan_iface()
     try:
-        main = (database.get_setting("lan_interface") or "").strip()
-        if main:
-            found.append(main)
+        _remember(found, database.get_setting("lan_interface"))
         for cfg in database.get_dhcp_configs() or []:
-            if cfg.get("enabled") and cfg.get("interface"):
-                found.append(cfg["interface"])
+            if cfg.get("enabled"):
+                _remember(found, cfg.get("interface"))
         for vlan in database.get_vlans() or []:
             if not vlan.get("enabled"):
                 continue
-            if (vlan.get("zone") or "LAN").upper() != "LAN":
+            if (vlan.get("zone") or "LAN").upper() == "WAN":
                 continue
             parent = vlan.get("parent_interface") or ""
             vid = vlan.get("vlan_id")
             if parent and vid is not None:
-                found.append(f"{parent}.{vid}")
+                _remember(found, f"{parent}.{vid}")
     except Exception:
-        return []
+        found = []
+    for name in _live_ifaces():
+        _remember(found, name)
     out = []
     for name in found:
-        if name and name not in out:
-            out.append(name)
+        if name == wan or name.startswith(_SKIP_PREFIXES):
+            continue
+        out.append(name)
     return out
 
 

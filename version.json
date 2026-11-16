@@ -1,8 +1,8 @@
 {
-  "version": "1.0.36",
+  "version": "1.0.37",
   "date": "2026-11-16",
   "product": "FGUARD",
   "changelog": [
-    "Sync no longer turns TeamViewer, AnyDesk or torrents on. Quick App Block stays the only switch, and the blocks already saved stay as they are."
+    "App Block now sits on every LAN, including the second Tavros network and VLAN 20. The Tavros LAN is no longer let through before the check. VPN and the other site stay on the same path."
   ]
 }
