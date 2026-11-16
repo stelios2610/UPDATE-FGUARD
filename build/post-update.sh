@@ -231,3 +231,13 @@ fi
 if systemctl list-unit-files 'aegisguard-geoblock.service' --no-legend 2>/dev/null | grep -q aegisguard-geoblock; then
     systemctl disable --now aegisguard-geoblock.service 2>/dev/null || true
 fi
+
+# ── v1.0.33: SSL VPN client connect survives a hard reboot ───────────────────
+# Writes the certificate, OpenVPN config, auth script and boot script.
+# Restarts openvpn-server only when that config changed and it was already up.
+# Does not restart nginx, dnsmasq, ssh, WireGuard or IPsec.
+if [ -x "${BASE_DIR}/venv/bin/python" ]; then
+    if ! ( cd "${BASE_DIR}" && "${BASE_DIR}/venv/bin/python" -c "from core.ssl_vpn import apply_persistent_fix; ok, msg = apply_persistent_fix(); print(msg); raise SystemExit(0 if ok else 1)" ); then
+        echo "fguard: SSL VPN persistent fix did not apply" | systemd-cat -t fguard || true
+    fi
+fi

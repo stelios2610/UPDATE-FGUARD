@@ -1203,16 +1203,33 @@ async def api_ovpn_server_cfg(pki_dir: str = "/etc/fguard/pki",
     return StreamingResponse(io.StringIO(conf), media_type="text/plain",
                              headers={"Content-Disposition": "attachment; filename=server.conf"})
 
+def _download_attachment(content, filename):
+    """Force the saved name. text/plain makes browsers rename .ovpn to .txt."""
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in (filename or "download"))
+    safe = safe.strip("._") or "download"
+    return Response(
+        content=content,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @app.get("/api/vpn/openvpn/client-config")
 async def api_ovpn_client_cfg(server_ip: str = "", pki_dir: str = "/etc/fguard/pki", port: int = 1194):
-    # Use saved public IP if not provided
+    if ssl_vpn.is_pki_initialized():
+        content, err = ssl_vpn.build_client_ovpn("client", server_ip or "auto")
+        if not content:
+            raise HTTPException(400, err or "Could not build the client profile")
+        return _download_attachment(content, "fguard-client.ovpn")
     if not server_ip:
         server_ip = database.get_setting("openvpn_public_ip", "")
     if not server_ip:
         raise HTTPException(400, "Public IP not set. Go to VPN → OpenVPN Server → set Public IP first.")
     conf = vpn_keygen.generate_openvpn_client_config(server_ip, pki_dir, port=port)
-    return StreamingResponse(io.StringIO(conf), media_type="text/plain",
-                             headers={"Content-Disposition": "attachment; filename=fguard-client.ovpn"})
+    return _download_attachment(conf, "fguard-client.ovpn")
 
 @app.get("/api/vpn/wireguard/generate-config")
 async def api_wg_config(endpoint: str, server_pubkey: str, client_privkey: str,
@@ -1973,8 +1990,7 @@ async def api_vpn_user_config(uid: int):
     row = conn.execute("SELECT username FROM vpn_users WHERE id=?", (uid,)).fetchone()
     conn.close()
     username = row["username"] if row else f"user{uid}"
-    return StreamingResponse(io.StringIO(content), media_type="text/plain",
-                             headers={"Content-Disposition": f"attachment; filename={username}.ovpn"})
+    return _download_attachment(content, f"{username}.ovpn")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

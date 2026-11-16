@@ -128,8 +128,6 @@ verify-client-cert optional
 
 # Settings
 keepalive 10 120
-{'compress lz4-v2' if cfg.get('compress',1) else ''}
-{'push "compress lz4-v2"' if cfg.get('compress',1) else ''}
 max-clients 100
 persist-key
 persist-tun
@@ -179,52 +177,21 @@ def write_auth_script():
     auth_script = "/etc/fguard/vpn-auth.sh"
     auth_check = "/etc/fguard/vpn_auth_check.py"
 
-    auth_check_code = """#!/usr/bin/env python3
-import sys, sqlite3, hashlib, hmac
-
-DB = '/opt/fguard/firewall.db' if __import__('os').path.isfile('/opt/fguard/firewall.db') else '/opt/aegisguard/firewall.db'
-
-try:
-    import bcrypt as _bcrypt
-    _BCRYPT_OK = True
-except ImportError:
-    _BCRYPT_OK = False
-
-try:
-    with open(sys.argv[1]) as f:
-        lines = f.read().splitlines()
-    username = lines[0] if len(lines) > 0 else ''
-    password = lines[1] if len(lines) > 1 else ''
-
-    conn = sqlite3.connect(DB)
-    row = conn.execute('SELECT password_hash, enabled FROM vpn_users WHERE username=?', (username,)).fetchone()
-    conn.close()
-    if not row or not row[1]:
-        sys.exit(1)
-    phash = row[0]
-    if not phash or ':' not in phash:
-        sys.exit(1)
-
-    if phash.startswith('bcrypt:'):
-        if not _BCRYPT_OK:
-            sys.exit(1)
-        sys.exit(0 if _bcrypt.checkpw(password.encode(), phash[7:].encode()) else 1)
-    else:
-        parts = phash.split(':', 2)
-        if len(parts) != 3:
-            sys.exit(1)
-        _, salt, stored = parts
-        h = hashlib.sha256(f'{salt}{password}'.encode()).hexdigest()
-        sys.exit(0 if hmac.compare_digest(h, stored) else 1)
-except Exception:
-    sys.exit(1)
-"""
+    source = os.path.join(BASE_DIR, "build", "server-configs", "vpn_auth_check.py")
+    try:
+        with open(source, encoding="utf-8") as handle:
+            auth_check_code = handle.read()
+    except Exception:
+        auth_check_code = ""
+    if "mode=ro" not in auth_check_code:
+        return False, "Auth check source is missing"
     try:
         os.makedirs("/etc/fguard", exist_ok=True)
         with open(auth_script, "w") as f:
             f.write(script)
         with open(auth_check, "w") as f:
             f.write(auth_check_code)
+        _chmod_vpn_db_readable()
         os.chmod(auth_script, 0o755)
         os.chmod(auth_check, 0o755)
         os.chmod("/etc/fguard", 0o755)
@@ -253,6 +220,12 @@ def _kill_orphan_openvpn():
 
 def start_server():
     global _server_process, _server_status
+
+    if IS_LINUX and is_pki_initialized():
+        try:
+            ensure_server_eku()
+        except Exception:
+            pass
 
     ok, msg = write_server_config()
     if not ok:
@@ -770,15 +743,14 @@ def get_connected_clients():
 
 # ── Per-user client config generation ────────────────────────────────────────
 
-def generate_user_config(vpn_user, server_ip="auto"):
-    """Generate a .ovpn config for a specific VPN user."""
+def build_client_ovpn(username, server_ip="auto"):
+    """Client profile text. Does not write a file or change the user row."""
     cfg = database.get_ssl_vpn_config()
     if not cfg:
         return None, "SSL VPN not configured"
 
-    if server_ip == "auto":
-        # Use WAN IP from settings, fallback to detecting public IP
-        server_ip = database.get_setting("wan_ip", "")
+    if not server_ip or server_ip == "auto":
+        server_ip = database.get_setting("wan_ip", "") or database.get_setting("openvpn_public_ip", "")
         if not server_ip:
             try:
                 import urllib.request
@@ -788,9 +760,7 @@ def generate_user_config(vpn_user, server_ip="auto"):
             except Exception:
                 pass
         if not server_ip:
-            # Fallback: use eth0 IP
             try:
-                import subprocess
                 result = subprocess.run(
                     ["hostname", "-I"], capture_output=True, text=True, timeout=3
                 )
@@ -808,7 +778,7 @@ def generate_user_config(vpn_user, server_ip="auto"):
         return f"<{tag}>\n{content.strip()}\n</{tag}>\n" if content else ""
 
     conf = f"""# FGUARD SSL VPN - Client Config
-# User: {vpn_user['username']}
+# User: {username}
 # Server: {server_ip}:{port}
 # Generated: {datetime.now().isoformat()}
 
@@ -834,11 +804,16 @@ cipher {cipher}
 auth {auth_alg}
 tls-version-min {cfg.get('tls_version','1.2')}
 remote-cert-tls server
-
-# Settings
-{'compress lz4-v2' if cfg.get('compress',1) else ''}
 verb 3
 """
+    return conf, None
+
+
+def generate_user_config(vpn_user, server_ip="auto"):
+    """Generate a .ovpn config for a specific VPN user."""
+    conf, err = build_client_ovpn(vpn_user["username"], server_ip)
+    if conf is None:
+        return None, err
 
     username = vpn_user["username"]
     os.makedirs(CONFIGS_DIR, exist_ok=True)
@@ -847,7 +822,8 @@ verb 3
     try:
         with open(config_path, "w") as f:
             f.write(conf)
-        database.update_vpn_user(vpn_user["id"], config_path=config_path)
+        if vpn_user.get("id"):
+            database.update_vpn_user(vpn_user["id"], config_path=config_path)
         return config_path, conf
     except Exception as e:
         return None, str(e)
@@ -863,9 +839,18 @@ def get_user_config_content(user_id):
     user = dict(row)
     if user.get("config_path") and os.path.isfile(user["config_path"]):
         with open(user["config_path"]) as f:
-            return f.read()
+            return _without_compress_push(f.read())
     _, content = generate_user_config(user)
-    return content
+    return _without_compress_push(content)
+
+
+def _without_compress_push(content):
+    """Drop compress lines from a profile. OpenVPN 2.6 rejects a compress push."""
+    if not content:
+        return content
+    skip = {"compress lz4-v2", "compress lz4", 'push "compress lz4-v2"'}
+    lines = [line for line in content.splitlines() if line.strip() not in skip]
+    return "\n".join(lines) + "\n"
 
 
 # ── Setup wizard ──────────────────────────────────────────────────────────────
@@ -882,3 +867,185 @@ def quick_setup(port=1194, proto="udp", server_subnet="10.8.0.0", dns1="1.1.1.1"
         write_server_config()
         database.save_ssl_vpn_config(status="Ready - Not Started")
     return ok, msg
+
+
+def _vpn_db_paths():
+    paths = []
+    try:
+        from db.database import DB_PATH
+        paths.append(DB_PATH)
+    except Exception:
+        pass
+    paths.extend(["/opt/fguard/firewall.db", "/opt/aegisguard/firewall.db"])
+    unique = []
+    for path in paths:
+        if path and path not in unique:
+            unique.append(path)
+    return unique
+
+
+def _chmod_vpn_db_readable():
+    """Let the nobody user read the database. Do not grant write."""
+    for path in _vpn_db_paths():
+        if not os.path.isfile(path):
+            continue
+        try:
+            os.chmod(path, os.stat(path).st_mode | 0o444)
+        except Exception:
+            pass
+
+
+def _read_text(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+    except Exception:
+        return None
+
+
+def _config_body(text):
+    if not text:
+        return ""
+    lines = [
+        line for line in text.splitlines()
+        if not line.startswith("# Generated:")
+    ]
+    return "\n".join(lines).strip()
+
+
+def _openvpn_state(command):
+    try:
+        result = subprocess.run(
+            ["systemctl", command, "openvpn-server@server"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return ""
+
+
+def ensure_server_eku():
+    """Add serverAuth to the current server certificate. Same key, same CA."""
+    from core.vpn_keygen import resign_server_certificate
+
+    cert_path = os.path.join(PKI_DIR, "server.crt")
+    key_path = os.path.join(PKI_DIR, "server.key")
+    ca_path = os.path.join(PKI_DIR, "ca.crt")
+    ca_key = os.path.join(PKI_DIR, "ca.key")
+    if not all(os.path.isfile(path) for path in (cert_path, key_path, ca_path, ca_key)):
+        return False, "PKI files missing"
+    ok, message = resign_server_certificate(ca_path, ca_key, key_path, cert_path)
+    if not ok:
+        return False, message
+    with open(cert_path, encoding="utf-8") as handle:
+        pem = handle.read()
+    cfg = database.get_ssl_vpn_config() or {}
+    if (cfg.get("server_cert") or "").strip() != pem.strip():
+        database.save_ssl_vpn_config(server_cert=pem)
+    return True, message
+
+
+def _snapshot_openvpn():
+    cert_path = os.path.join(PKI_DIR, "server.crt")
+    cfg = database.get_ssl_vpn_config() or {}
+    cert_bytes = None
+    try:
+        with open(cert_path, "rb") as handle:
+            cert_bytes = handle.read()
+    except Exception:
+        pass
+    return {
+        "active": _openvpn_state("is-active") == "active",
+        "enabled": _openvpn_state("is-enabled") == "enabled",
+        "cert_file": cert_bytes,
+        "db_cert": cfg.get("server_cert") or "",
+        "systemd": _read_text(SYSTEMD_CONF),
+        "local": _read_text(SERVER_CONF),
+    }
+
+
+def _restore_openvpn(snapshot):
+    cert_path = os.path.join(PKI_DIR, "server.crt")
+    if snapshot.get("cert_file") is not None:
+        with open(cert_path, "wb") as handle:
+            handle.write(snapshot["cert_file"])
+    if snapshot.get("db_cert"):
+        database.save_ssl_vpn_config(server_cert=snapshot["db_cert"])
+    if snapshot.get("local") is not None:
+        with open(SERVER_CONF, "w", encoding="utf-8") as handle:
+            handle.write(snapshot["local"])
+    if snapshot.get("systemd") is not None:
+        os.makedirs(os.path.dirname(SYSTEMD_CONF), exist_ok=True)
+        with open(SYSTEMD_CONF, "w", encoding="utf-8") as handle:
+            handle.write(snapshot["systemd"])
+
+
+def _restart_openvpn():
+    try:
+        subprocess.run(
+            ["systemctl", "restart", "openvpn-server@server"],
+            timeout=20, check=False, capture_output=True,
+        )
+    except Exception:
+        return False
+    return _openvpn_state("is-active") == "active"
+
+
+def apply_persistent_fix():
+    """Put the SSL VPN fix on disk so a hard reboot keeps it.
+
+    DNS, nginx, DHCP, WireGuard and IPsec are not restarted. OpenVPN is
+    restarted only when its config actually changed and it was already
+    running. If that restart does not come back, the previous certificate
+    and config are restored and OpenVPN is started again.
+    """
+    if not IS_LINUX:
+        return True, "Not Linux"
+
+    auth_ok, auth_msg = write_auth_script()
+    try:
+        from core.geoblock import patch_vpn_boot_script
+        patch_vpn_boot_script()
+    except Exception:
+        pass
+    if not is_pki_initialized():
+        if not auth_ok:
+            return False, auth_msg
+        return True, "Auth script updated. PKI not initialized."
+
+    snapshot = _snapshot_openvpn()
+    ok, message = ensure_server_eku()
+    if not ok:
+        _restore_openvpn(snapshot)
+        return False, message
+
+    ok, message = write_server_config()
+    if not ok:
+        _restore_openvpn(snapshot)
+        return False, message
+
+    wants_boot = snapshot["active"] or snapshot["enabled"] or (
+        (database.get_ssl_vpn_config() or {}).get("status") == "Running"
+    )
+    if wants_boot:
+        try:
+            subprocess.run(
+                ["systemctl", "enable", "openvpn-server@server"],
+                timeout=15, check=False, capture_output=True,
+            )
+        except Exception:
+            pass
+
+    changed = _config_body(snapshot["systemd"]) != _config_body(_read_text(SYSTEMD_CONF))
+    # A stopped OpenVPN stays stopped. Reboot brings it back only when the
+    # unit is enabled or the database still says it should be running.
+    if snapshot["active"] and changed:
+        if not _restart_openvpn():
+            _restore_openvpn(snapshot)
+            _restart_openvpn()
+            return False, "OpenVPN kept the previous config because the new one did not start"
+        return True, "OpenVPN reloaded with the updated certificate and config"
+
+    if not auth_ok:
+        return False, auth_msg
+    return True, "SSL VPN files saved for the next boot"

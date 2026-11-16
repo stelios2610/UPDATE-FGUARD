@@ -370,6 +370,36 @@ def get_status():
     }
 
 
+def patch_vpn_boot_script(path="/usr/local/bin/fguard-geoblock-rules.sh"):
+    """Keep SSL VPN port 1194 open in the boot script.
+
+    Edits the file only. Does not run iptables and does not rebuild the
+    live chain.
+    """
+    if not os.path.isfile(path):
+        return False
+    try:
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+    except Exception:
+        return False
+    if "--dport 1194 -j ACCEPT" in text:
+        return False
+    needle = "iptables -A $CHAIN -i $WAN -j DROP"
+    if needle not in text:
+        return False
+    insert = (
+        "iptables -A $CHAIN -i $WAN -p udp --dport 1194 -j ACCEPT\n"
+        "iptables -A $CHAIN -i $WAN -p tcp --dport 1194 -j ACCEPT\n"
+    )
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text.replace(needle, insert + needle, 1))
+    except Exception:
+        return False
+    return True
+
+
 def _install_persistence():
     """Create systemd services that restore ipset and rebuild iptables chain on boot."""
     # 1. ipset restore service — runs BEFORE netfilter-persistent and chain rebuild
@@ -414,6 +444,8 @@ iptables -A $CHAIN -i $WAN -s 172.16.0.0/12 -j RETURN
 iptables -A $CHAIN -i $WAN -s 192.168.0.0/16 -j RETURN
 iptables -A $CHAIN ! -i $WAN -j RETURN
 iptables -A $CHAIN -i $WAN -m set --match-set $IPSET src -j ACCEPT
+iptables -A $CHAIN -i $WAN -p udp --dport 1194 -j ACCEPT
+iptables -A $CHAIN -i $WAN -p tcp --dport 1194 -j ACCEPT
 iptables -A $CHAIN -i $WAN -j DROP
 iptables -D INPUT -j $CHAIN 2>/dev/null
 iptables -I INPUT 1 -j $CHAIN

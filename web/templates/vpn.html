@@ -40,7 +40,7 @@
     <div style="display:flex;align-items:center;gap:10px;padding:0 20px 16px">
       <button class="btn btn-success" id="ovpn-start-btn" onclick="startOpenVPN()">▶ Start OpenVPN Server</button>
       <button class="btn btn-danger"  id="ovpn-stop-btn"  onclick="stopOpenVPN()">■ Stop OpenVPN Server</button>
-      <button class="btn btn-secondary" onclick="window.open('/api/vpn/openvpn/client-config','_blank')">
+      <button class="btn btn-secondary" onclick="downloadOvpn('/api/vpn/openvpn/client-config','fguard-client.ovpn')">
         ⬇ Download Client .ovpn
       </button>
       <span id="ovpn-details" style="font-size:11px;color:var(--text-muted);margin-left:8px"></span>
@@ -946,7 +946,30 @@ async function saveVPNUser() {
   if (!data.username||!data.password) { toast('Username and password required','error'); return; }
   try { await POST('/api/vpn/users',data); toast(`User ${data.username} created`,'success'); closeModal('vpnuser-modal'); setTimeout(()=>location.reload(),600); } catch(e) { toast('Error: '+e.message,'error'); }
 }
-async function downloadUserConfig(id,u) { window.open(`/api/vpn/users/${id}/config`,'_blank'); }
+async function downloadOvpn(url, filename) {
+  try {
+    const r = await fetch(url, {credentials: 'same-origin'});
+    if (r.status === 401) { _handleExpired(); return; }
+    if (!r.ok) {
+      let msg = 'Download failed';
+      try { const j = await r.json(); msg = j.detail || j.message || msg; } catch (e) {}
+      toast(msg, 'error');
+      return;
+    }
+    const blob = await r.blob();
+    const a = document.createElement('a');
+    const objectUrl = URL.createObjectURL(new Blob([blob], {type: 'application/octet-stream'}));
+    a.href = objectUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  } catch (e) {
+    toast('Download failed', 'error');
+  }
+}
+async function downloadUserConfig(id, u) { downloadOvpn(`/api/vpn/users/${id}/config`, u + '.ovpn'); }
 async function toggleVPNUser(id,en) { await POST(`/api/vpn/users/${id}/toggle`); toast(en?'Disabled':'Enabled','success'); setTimeout(()=>location.reload(),400); }
 async function deleteVPNUser(id) { if (!confirm2('Delete VPN user?')) return; await DELETE(`/api/vpn/users/${id}`); document.getElementById(`vuser-${id}`)?.remove(); toast('Deleted','success'); }
 async function setVpnUserPassword(id,username) {

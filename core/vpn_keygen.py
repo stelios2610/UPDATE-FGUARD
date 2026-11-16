@@ -55,6 +55,77 @@ def generate_wireguard_preshared_key():
 
 # ── OpenVPN PKI ───────────────────────────────────────────────────────────────
 
+_SERVER_EXT = """basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectKeyIdentifier=hash
+"""
+
+
+def server_cert_has_eku(cert_path):
+    """True when the certificate carries TLS Web Server Authentication."""
+    ok, out, err = run(["openssl", "x509", "-in", cert_path, "-noout", "-text"])
+    blob = f"{out}\n{err}"
+    return ok and ("TLS Web Server Authentication" in blob or "serverAuth" in blob)
+
+
+def _cert_subject_arg(cert_path):
+    ok, out, err = run([
+        "openssl", "x509", "-in", cert_path, "-noout", "-subject", "-nameopt", "RFC2253",
+    ])
+    if not ok or "=" not in (out or ""):
+        return "/CN=server/O=FGUARD/C=GR"
+    subject = out.split("=", 1)[1].strip()
+    parts = [part.strip() for part in subject.split(",") if part.strip()]
+    if not parts:
+        return "/CN=server/O=FGUARD/C=GR"
+    return "/" + "/".join(parts)
+
+
+def resign_server_certificate(ca_cert, ca_key, server_key, server_cert, days=3650):
+    """Re-sign the existing server key with the existing CA and add serverAuth.
+
+    The CA, the server key and the tls-auth key stay as they are. On failure
+    the certificate file is left untouched.
+    """
+    needed = (ca_cert, ca_key, server_key, server_cert)
+    if not all(os.path.isfile(path) for path in needed):
+        return False, "PKI files missing"
+    if server_cert_has_eku(server_cert):
+        return True, "already has serverAuth"
+
+    ext_path = server_cert + ".ext"
+    csr_path = server_cert + ".csr"
+    tmp_path = server_cert + ".new"
+    try:
+        with open(ext_path, "w") as ext_file:
+            ext_file.write(_SERVER_EXT)
+        subject = _cert_subject_arg(server_cert)
+        ok, _, err = run([
+            "openssl", "req", "-new", "-key", server_key, "-out", csr_path, "-subj", subject,
+        ])
+        if not ok:
+            return False, err or "Could not build a certificate request"
+        ok, _, err = run([
+            "openssl", "x509", "-req", "-days", str(days),
+            "-in", csr_path, "-CA", ca_cert, "-CAkey", ca_key,
+            "-CAcreateserial", "-out", tmp_path, "-extfile", ext_path,
+        ])
+        if not ok:
+            return False, err or "Could not sign the server certificate"
+        verify_ok, _, verify_err = run(["openssl", "verify", "-CAfile", ca_cert, tmp_path])
+        if not verify_ok or not server_cert_has_eku(tmp_path):
+            return False, verify_err or "Signed certificate is missing serverAuth"
+        os.replace(tmp_path, server_cert)
+        return True, "server certificate re-signed"
+    finally:
+        for path in (ext_path, csr_path, tmp_path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
 def generate_openvpn_pki(output_dir, server_name="server", client_name="client",
                           key_bits=2048, days=3650):
     """Generate complete OpenVPN PKI (CA, server cert, client cert) using OpenSSL."""
@@ -77,7 +148,13 @@ def generate_openvpn_pki(output_dir, server_name="server", client_name="client",
     steps.append(("CA key", ok, err))
     ok, _, err = run(["openssl", "req", "-new", "-x509", "-days", str(days),
                       "-key", ca_key, "-out", ca_cert,
-                      "-subj", f"/CN=FGUARD-CA/O=FGUARD/C=GR"])
+                      "-subj", "/CN=FGUARD-CA/O=FGUARD/C=GR",
+                      "-addext", "basicConstraints=critical,CA:TRUE",
+                      "-addext", "keyUsage=critical,keyCertSign,cRLSign"])
+    if not ok:
+        ok, _, err = run(["openssl", "req", "-new", "-x509", "-days", str(days),
+                          "-key", ca_key, "-out", ca_cert,
+                          "-subj", "/CN=FGUARD-CA/O=FGUARD/C=GR"])
     steps.append(("CA cert", ok, err))
 
     # Server key + cert
@@ -86,9 +163,23 @@ def generate_openvpn_pki(output_dir, server_name="server", client_name="client",
     ok, _, err = run(["openssl", "req", "-new", "-key", server_key, "-out", server_csr,
                       "-subj", f"/CN={server_name}/O=FGUARD/C=GR"])
     steps.append(("Server CSR", ok, err))
-    ok, _, err = run(["openssl", "x509", "-req", "-days", str(days),
-                      "-in", server_csr, "-CA", ca_cert, "-CAkey", ca_key,
-                      "-CAcreateserial", "-out", server_cert])
+    ext_path = os.path.join(output_dir, "server.ext")
+    try:
+        with open(ext_path, "w") as ext_file:
+            ext_file.write(_SERVER_EXT)
+        ok, _, err = run(["openssl", "x509", "-req", "-days", str(days),
+                          "-in", server_csr, "-CA", ca_cert, "-CAkey", ca_key,
+                          "-CAcreateserial", "-out", server_cert,
+                          "-extfile", ext_path])
+    finally:
+        try:
+            os.remove(ext_path)
+        except OSError:
+            pass
+    if not ok:
+        ok, _, err = run(["openssl", "x509", "-req", "-days", str(days),
+                          "-in", server_csr, "-CA", ca_cert, "-CAkey", ca_key,
+                          "-CAcreateserial", "-out", server_cert])
     steps.append(("Server cert", ok, err))
 
     # Client key + cert
@@ -106,8 +197,10 @@ def generate_openvpn_pki(output_dir, server_name="server", client_name="client",
     ok, _, err = run(["openssl", "dhparam", "-out", dh_params, "2048"], timeout=300)
     steps.append(("DH params", ok, err))
 
-    # TLS-Auth key
-    ok, _, err = run(["openvpn", "--genkey", "--secret", ta_key])
+    # TLS-Auth key. OpenVPN 2.6 takes `genkey tls-auth`; older builds take --secret.
+    ok, _, err = run(["openvpn", "--genkey", "tls-auth", ta_key])
+    if not ok:
+        ok, _, err = run(["openvpn", "--genkey", "--secret", ta_key])
     steps.append(("TLS-Auth key", ok, err))
 
     return {
@@ -174,8 +267,6 @@ keepalive 10 120
 cipher AES-256-GCM
 auth SHA256
 tls-version-min 1.2
-compress lz4-v2
-push "compress lz4-v2"
 user nobody
 group nogroup
 persist-key
@@ -217,7 +308,6 @@ auth SHA256
 tls-version-min 1.2
 verb 3
 key-direction 1
-compress lz4-v2
 
 <ca>
 {_inline(ca)}</ca>
