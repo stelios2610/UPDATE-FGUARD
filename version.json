@@ -1,9 +1,9 @@
 {
-  "version": "1.0.33",
+  "version": "1.0.34",
   "date": "2026-11-16",
   "product": "FGUARD",
   "changelog": [
-    "SSL VPN clients can connect. The server certificate keeps the same key and CA, and the profile downloads as .ovpn.",
-    "The VPN port, login check and OpenVPN service stay in place after a hard reboot."
+    "Application Control stops the connection of a blocked app, not only its website. Other internet traffic stays on the same path.",
+    "Clearing the block removes only that app. The choice stays after a reboot."
   ]
 }

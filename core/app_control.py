@@ -5,9 +5,31 @@ import psutil
 from db import database
 from core.platform import IS_LINUX, run
 
-# ─── Predefined app blocks (gateway-level: DNS + port blocking) ───────────────
+# ─── Predefined app blocks (gateway-level) ────────────────────────────────────
+# The chain is jumped only for LAN → WAN, ahead of the accept that lets the
+# LAN out. Anything that is not one of these apps returns to that path.
+# TCP 443 is dropped only when the packet carries that app's name.
 
 APPBLOCK_DNSMASQ = "/etc/dnsmasq.d/fguard-appblock.conf"
+APPBLOCK_CHAIN = "FGUARD_APPBLK"
+
+# A drop on these ports would hit DNS, the web, or STUN used by other calls.
+_SHARED_PORTS = {53, 80, 443, 853, 3478, 3479}
+# Cloudflare addresses. Other sites use them, so they never go in front.
+_SHARED_RANGES = {"104.18.30.170/32", "104.18.31.170/32"}
+_MIN_PREFIX = 20
+_CONNBYTES = [
+    "-m", "connbytes", "--connbytes", "1:8",
+    "--connbytes-dir", "original", "--connbytes-mode", "packets",
+]
+_BYPASS = [
+    ["-i", "tun0", "-j", "RETURN"],
+    ["-o", "tun0", "-j", "RETURN"],
+    ["-d", "10.16.0.0/24", "-j", "RETURN"],
+    ["-s", "10.16.0.0/24", "-j", "RETURN"],
+    ["-d", "10.8.0.0/24", "-j", "RETURN"],
+    ["-s", "10.8.0.0/24", "-j", "RETURN"],
+]
 
 PREDEFINED_APPS = {
     "AnyDesk": {
@@ -15,9 +37,8 @@ PREDEFINED_APPS = {
         "icon": "🖥",
         "domains": ["anydesk.com", "relay.anydesk.com", "net.anydesk.com", "static.anydesk.com"],
         "ports": [("tcp", 7070), ("udp", 7070)],
-        # AnyDesk GmbH own relay server IP ranges (not Cloudflare, these are their actual relays)
-        "ip_ranges": ["195.211.220.0/23", "194.165.82.0/24", "194.165.16.0/24",
-                      "104.18.30.170/32", "104.18.31.170/32"],
+        # AnyDesk's own relay ranges. Shared Cloudflare addresses are not listed.
+        "ip_ranges": ["195.211.220.0/23", "194.165.82.0/24", "194.165.16.0/24"],
     },
     "TeamViewer": {
         "description": "Remote support & desktop sharing",
@@ -55,6 +76,12 @@ PREDEFINED_APPS = {
         "icon": "✈",
         "domains": ["telegram.org", "telegram.me", "t.me", "telegram.im", "telegra.ph"],
         "ports": [],
+        # Published Telegram data-center ranges (core.telegram.org/resources/cidr.txt).
+        "ip_ranges": [
+            "91.108.56.0/22", "91.108.4.0/22", "91.108.8.0/22", "91.108.16.0/22",
+            "91.108.12.0/22", "149.154.160.0/20", "91.105.192.0/23",
+            "91.108.20.0/22", "185.76.151.0/24",
+        ],
     },
     "Torrent": {
         "description": "BitTorrent P2P file sharing",
@@ -68,6 +95,7 @@ PREDEFINED_APPS = {
         "description": "Video calls & messaging",
         "icon": "📞",
         "domains": ["skype.com", "skypeassets.com", "skypecdn.com"],
+        # 3478/3479 are STUN. They stay out of the gateway drop so other calls keep working.
         "ports": [("tcp", 3478), ("tcp", 3479), ("udp", 3478), ("udp", 3479)],
     },
     "TeamSpeak": {
@@ -84,63 +112,250 @@ def _appblock_comment(app_name):
     return f"fguard_appblock_{safe}"
 
 
+def sni_names(domains):
+    """Names long enough to match inside a TLS handshake without catching other sites."""
+    cleaned = []
+    for raw in domains or []:
+        name = (raw or "").strip().lower().rstrip(".")
+        # t.me is four characters and would match unrelated packets.
+        # zoom.us is the shortest name in the list that still identifies one app.
+        if len(name) < 7 or "." not in name:
+            continue
+        cleaned.append(name)
+    needles = []
+    for name in cleaned:
+        if any(name != other and name.endswith("." + other) for other in cleaned):
+            continue
+        if name not in needles:
+            needles.append(name)
+    return needles
+
+
+def _prefix_ok(cidr):
+    if cidr in _SHARED_RANGES:
+        return False
+    try:
+        ip, prefix = cidr.split("/")
+        prefix = int(prefix)
+        parts = ip.split(".")
+    except ValueError:
+        return False
+    if prefix < _MIN_PREFIX or prefix > 32 or len(parts) != 4:
+        return False
+    return all(part.isdigit() and 0 <= int(part) <= 255 for part in parts)
+
+
+def _without_connbytes(args):
+    out = []
+    i = 0
+    width = len(_CONNBYTES)
+    while i < len(args):
+        if args[i:i + width] == _CONNBYTES:
+            i += width
+            continue
+        out.append(args[i])
+        i += 1
+    return out
+
+
+def chain_rules(enabled_names):
+    """Ordered rules for FGUARD_APPBLK. The chain always returns what it does not drop."""
+    rules = [list(item) for item in _BYPASS]
+    for name in enabled_names:
+        cfg = PREDEFINED_APPS.get(name)
+        if not cfg:
+            continue
+        comment = _appblock_comment(name)
+        for proto, port in cfg.get("ports", []):
+            try:
+                port = int(port)
+            except (TypeError, ValueError):
+                continue
+            if proto not in ("tcp", "udp") or port in _SHARED_PORTS:
+                continue
+            rules.append([
+                "-p", proto, "--dport", str(port),
+                "-m", "comment", "--comment", comment, "-j", "DROP",
+            ])
+        for cidr in cfg.get("ip_ranges", []):
+            if not _prefix_ok(cidr):
+                continue
+            rules.append([
+                "-d", cidr, "-m", "comment", "--comment", comment, "-j", "DROP",
+            ])
+        for needle in sni_names(cfg.get("domains", [])):
+            rules.append([
+                "-p", "tcp", "--dport", "443",
+                "-m", "string", "--string", needle, "--algo", "bm",
+                *_CONNBYTES,
+                "-m", "comment", "--comment", comment, "-j", "DROP",
+            ])
+    rules.append(["-j", "RETURN"])
+    return rules
+
+
+def _enabled_app_names():
+    return [
+        name for name in PREDEFINED_APPS
+        if database.get_setting(f"appblock_{name}") == "1"
+    ]
+
+
 def _write_appblock_dnsmasq():
-    """Rewrite /etc/dnsmasq.d/fguard-appblock.conf with all enabled app blocks."""
+    """Rewrite the app-block DNS file. Restart dnsmasq only when the file changes."""
     if not IS_LINUX:
         return
     lines = ["# FGUARD App Block — auto-generated", ""]
+    enabled = False
     for name, cfg in PREDEFINED_APPS.items():
-        key = f"appblock_{name}"
-        if database.get_setting(key) == "1":
-            for domain in cfg["domains"]:
-                lines.append(f"address=/{domain}/0.0.0.0")
-                lines.append(f"address=/{domain}/::")
+        if database.get_setting(f"appblock_{name}") != "1":
+            continue
+        enabled = True
+        for domain in cfg["domains"]:
+            lines.append(f"address=/{domain}/0.0.0.0")
+            lines.append(f"address=/{domain}/::")
+    body = "\n".join(lines) + "\n"
     try:
-        with open(APPBLOCK_DNSMASQ, "w") as f:
-            f.write("\n".join(lines) + "\n")
+        if not enabled and not os.path.isfile(APPBLOCK_DNSMASQ):
+            return
+        current = ""
+        if os.path.isfile(APPBLOCK_DNSMASQ):
+            with open(APPBLOCK_DNSMASQ) as handle:
+                current = handle.read()
+        if current == body:
+            return
+        with open(APPBLOCK_DNSMASQ, "w") as handle:
+            handle.write(body)
         run(["systemctl", "restart", "dnsmasq"])
     except Exception:
         pass
 
 
-def _remove_appblock_iptables(app_name):
-    """Remove all iptables FORWARD rules for this app block."""
-    tag = _appblock_comment(app_name)
+def _purge_legacy(chain):
+    """Drop the old end-of-FORWARD app rules. Leave the jump into our chain alone."""
+    ok, out, _ = run(["iptables", "-S", chain])
+    if not ok:
+        return
+    for line in out.splitlines():
+        if "fguard_appblock_" not in line or f"-j {APPBLOCK_CHAIN}" in line:
+            continue
+        parts = line.split()
+        if not parts or parts[0] != "-A":
+            continue
+        parts[0] = "-D"
+        run(["iptables"] + parts)
+
+
+def _delete_jumps():
+    ok, out, _ = run(["iptables", "-S", "FORWARD"])
+    if not ok:
+        return
+    for line in out.splitlines():
+        if line.startswith("-A FORWARD ") and line.endswith(f"-j {APPBLOCK_CHAIN}"):
+            parts = line.split()
+            parts[0] = "-D"
+            run(["iptables"] + parts)
+
+
+def _wan_iface():
+    setting = (database.get_setting("wan_interface") or "").strip()
+    if setting:
+        return setting
+    ok, out, _ = run(["ip", "route", "show", "default"])
+    parts = (out or "").split()
+    if "dev" in parts:
+        return parts[parts.index("dev") + 1]
+    return ""
+
+
+def _lan_ifaces():
+    found = []
+    try:
+        main = (database.get_setting("lan_interface") or "").strip()
+        if main:
+            found.append(main)
+        for cfg in database.get_dhcp_configs() or []:
+            if cfg.get("enabled") and cfg.get("interface"):
+                found.append(cfg["interface"])
+        for vlan in database.get_vlans() or []:
+            if not vlan.get("enabled"):
+                continue
+            if (vlan.get("zone") or "LAN").upper() != "LAN":
+                continue
+            parent = vlan.get("parent_interface") or ""
+            vid = vlan.get("vlan_id")
+            if parent and vid is not None:
+                found.append(f"{parent}.{vid}")
+    except Exception:
+        return []
+    out = []
+    for name in found:
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def _chain_exists():
+    ok, _, _ = run(["iptables", "-L", APPBLOCK_CHAIN, "-n"])
+    return ok
+
+
+def _install_jumps():
+    """Put the LAN→WAN jump at the front of FORWARD. No jump when nothing is blocked.
+
+    If the WAN or LAN name cannot be read, leave an existing jump where it is.
+    Deleting it first would drop the block until the next successful read.
+    """
+    if not _enabled_app_names() or not _chain_exists():
+        _delete_jumps()
+        return
+    wan = _wan_iface()
+    ifaces = [iface for iface in _lan_ifaces() if iface and iface != wan]
+    if not wan or not ifaces:
+        return
+    _delete_jumps()
+    for iface in ifaces:
+        run(["iptables", "-I", "FORWARD", "1",
+             "-i", iface, "-o", wan, "-j", APPBLOCK_CHAIN])
+
+
+def _add_chain_rule(args):
+    ok, _, _ = run(["iptables", "-A", APPBLOCK_CHAIN] + args)
+    if ok or "connbytes" not in args:
+        return ok
+    return run(["iptables", "-A", APPBLOCK_CHAIN] + _without_connbytes(args))[0]
+
+
+def _rebuild_appblock():
+    """Rebuild the app chain from the saved switches. Does not turn a new app on."""
+    if not IS_LINUX:
+        return
+    enabled = _enabled_app_names()
     for chain in ("FORWARD", "INPUT", "OUTPUT"):
-        while True:
-            ok, out, _ = run(["iptables", "-L", chain, "--line-numbers", "-n"])
-            if not ok:
-                break
-            lines = [l for l in out.splitlines() if tag in l]
-            if not lines:
-                break
-            num = lines[0].split()[0]
-            run(["iptables", "-D", chain, num])
+        _purge_legacy(chain)
+    run(["iptables", "-N", APPBLOCK_CHAIN])
+    run(["iptables", "-F", APPBLOCK_CHAIN])
+    if not enabled:
+        _delete_jumps()
+        return
+    for args in chain_rules(enabled):
+        _add_chain_rule(args)
+    _install_jumps()
+
+
+def _persist_rules():
+    run(["netfilter-persistent", "save"])
 
 
 def apply_app_block(app_name):
     """Enable gateway-level blocking for a predefined app."""
-    cfg = PREDEFINED_APPS.get(app_name)
-    if not cfg:
+    if app_name not in PREDEFINED_APPS:
         return False, f"Unknown app: {app_name}"
     database.set_setting(f"appblock_{app_name}", "1")
     if IS_LINUX:
-        _remove_appblock_iptables(app_name)
-        comment = _appblock_comment(app_name)
-        # Block by destination port
-        for proto, port in cfg.get("ports", []):
-            run(["iptables", "-A", "FORWARD",
-                 "-p", proto, "--dport", str(port),
-                 "-m", "comment", "--comment", comment,
-                 "-j", "DROP"])
-        # Block by destination IP range (catches hardcoded IPs and fallback connections)
-        for ip_range in cfg.get("ip_ranges", []):
-            run(["iptables", "-A", "FORWARD",
-                 "-d", ip_range,
-                 "-m", "comment", "--comment", comment,
-                 "-j", "DROP"])
+        _rebuild_appblock()
         _write_appblock_dnsmasq()
-        run(["netfilter-persistent", "save"])
+        _persist_rules()
     return True, f"{app_name} blocked"
 
 
@@ -148,10 +363,28 @@ def remove_app_block(app_name):
     """Disable gateway-level blocking for a predefined app."""
     database.set_setting(f"appblock_{app_name}", "0")
     if IS_LINUX:
-        _remove_appblock_iptables(app_name)
+        _rebuild_appblock()
         _write_appblock_dnsmasq()
-        run(["netfilter-persistent", "save"])
+        _persist_rules()
     return True, f"{app_name} unblocked"
+
+
+def reseat_appblock():
+    """Move the app jump back in front of later LAN→WAN accepts. No new blocks."""
+    if not IS_LINUX:
+        return
+    try:
+        enabled = _enabled_app_names()
+        if not _chain_exists():
+            if enabled:
+                _rebuild_appblock()
+                _persist_rules()
+            return
+        _install_jumps()
+        if enabled:
+            _persist_rules()
+    except Exception:
+        return
 
 
 def get_app_block_status():
@@ -333,9 +566,8 @@ def restore_gateway_blocks():
     """Re-apply gateway blocks that were already turned on. Does not enable new ones."""
     if not IS_LINUX:
         return
-    for name in PREDEFINED_APPS:
-        if database.get_setting(f"appblock_{name}") == "1":
-            apply_app_block(name)
+    _rebuild_appblock()
+    _write_appblock_dnsmasq()
 
 
 def get_running_apps():

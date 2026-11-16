@@ -252,6 +252,13 @@ def _apply_forward_bypass_blocks():
     for iface in _get_lan_interfaces():
         run(["iptables", "-D", "FORWARD", "-i", iface, "-o", wan, "-j", WF_CHAIN])
         run(["iptables", "-I", "FORWARD", "1", "-i", iface, "-o", wan, "-j", WF_CHAIN])
+    # This insert sits at FORWARD #1. Move the app chain back ahead of the
+    # LAN→WAN accept. It returns traffic that belongs to other sites.
+    try:
+        from core import app_control
+        app_control.reseat_appblock()
+    except Exception:
+        pass
 
 
 def _apply_doh_block():

@@ -1065,6 +1065,14 @@ def apply_vlans():
     # A separate VLAN-only dump wipes dhcp-relay and AD DNS forwards.
     write_dhcp_config()
 
+    # VLAN accepts are inserted at FORWARD #1. Put the app chain back in front
+    # of them. The chain returns every packet that is not a blocked app.
+    try:
+        from core import app_control
+        app_control.reseat_appblock()
+    except Exception:
+        pass
+
     # Save iptables
     run(["netfilter-persistent", "save"])
 

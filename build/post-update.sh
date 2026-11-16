@@ -241,3 +241,12 @@ if [ -x "${BASE_DIR}/venv/bin/python" ]; then
         echo "fguard: SSL VPN persistent fix did not apply" | systemd-cat -t fguard || true
     fi
 fi
+
+# ── v1.0.34: Application Control matches the app, then returns everything else ─
+# Rebuilds only blocks that are already on. Does not restart DNS when the
+# file is unchanged, and does not enable a new application.
+if [ -x "${BASE_DIR}/venv/bin/python" ]; then
+    if ! ( cd "${BASE_DIR}" && "${BASE_DIR}/venv/bin/python" -c "from core.app_control import restore_gateway_blocks; restore_gateway_blocks()" ); then
+        echo "fguard: application control rules were not rebuilt" | systemd-cat -t fguard || true
+    fi
+fi

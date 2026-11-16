@@ -134,12 +134,18 @@ if _IS_LINUX:
     except Exception:
         pass
 
-# DoH/QUIC drops last so they stay at FORWARD #1 after VPN/NAT ACCEPTs.
+# DoH/QUIC drops last so they stay ahead of the LAN→WAN accept.
 # Do not call apply_filters() here — that restarts dnsmasq and can take DNS down.
+# The app chain is reseated after that so a blocked app is matched first.
+# Its chain returns every other packet, including VPN and normal HTTPS.
 if _IS_LINUX:
     try:
         if database.get_setting("web_filter_enabled", "1") == "1":
             web_filter._apply_dns_redirect()
+    except Exception:
+        pass
+    try:
+        app_control.reseat_appblock()
     except Exception:
         pass
 
