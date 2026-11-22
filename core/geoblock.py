@@ -6,6 +6,7 @@ FGUARD_INPUT (including VPN ports). Private WAN ranges (Cosmote LAN)
 are exempt so the firewall stays reachable on 192.168.100.0/24.
 """
 import os
+import re
 import json
 import urllib.request
 import subprocess
@@ -269,20 +270,80 @@ def _apply_chain_rules(wan):
     print("FGUARD_INPUT chain rebuilt with geoblock")
 
 
-def _s2s_peer_ips():
-    """Public IPs of WireGuard / IPSec peers (Tavros etc.)."""
+_ENDPOINT_RE = re.compile(r"^\s*Endpoint\s*=\s*(\S+)\s*$", re.I)
+_IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+
+
+def peer_endpoint_hosts(text):
+    """Hostnames and addresses from WireGuard Endpoint lines."""
+    hosts = []
+    for raw in (text or "").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        match = _ENDPOINT_RE.match(line)
+        if not match:
+            continue
+        host = match.group(1).rsplit(":", 1)[0].strip("[]")
+        if host:
+            hosts.append(host)
+    return hosts
+
+
+def _resolve_peer_host(host):
+    if _IPV4_RE.match(host or ""):
+        return host
+    for cmd in (["getent", "ahostsv4", host], ["getent", "hosts", host]):
+        try:
+            out = subprocess.check_output(cmd, text=True, timeout=5)
+        except Exception:
+            continue
+        for line in out.splitlines():
+            ip = line.split()[0] if line.split() else ""
+            if _IPV4_RE.match(ip):
+                return ip
+    return ""
+
+
+def _conf_endpoint_hosts():
+    hosts = []
+    conf_dir = "/etc/wireguard"
+    if not os.path.isdir(conf_dir):
+        return hosts
+    for name in sorted(os.listdir(conf_dir)):
+        if not (name.startswith("wg") and name.endswith(".conf")):
+            continue
+        try:
+            with open(os.path.join(conf_dir, name)) as handle:
+                hosts.extend(peer_endpoint_hosts(handle.read()))
+        except Exception:
+            continue
+    return hosts
+
+
+def _wg_show_peer_ips():
     peers = set()
     try:
         out = subprocess.check_output(["wg", "show", "all", "endpoints"], text=True, timeout=3)
-        for line in out.splitlines():
-            # iface\tpubkey\t1.2.3.4:51820
-            parts = line.split()
-            if len(parts) >= 3 and ":" in parts[-1]:
-                host = parts[-1].rsplit(":", 1)[0].strip("[]")
-                if host and host[0].isdigit():
-                    peers.add(host)
     except Exception:
-        pass
+        return peers
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and ":" in parts[-1]:
+            host = parts[-1].rsplit(":", 1)[0].strip("[]")
+            if _IPV4_RE.match(host):
+                peers.add(host)
+    return peers
+
+
+def _s2s_peer_ips():
+    """Public IPs of WireGuard peers, taken from DNS when the endpoint is a name."""
+    peers = set()
+    for host in _conf_endpoint_hosts():
+        ip = _resolve_peer_host(host)
+        if ip:
+            peers.add(ip)
+    if peers:
+        return sorted(peers)
+    peers.update(_wg_show_peer_ips())
     if not peers:
         peers.add("94.71.89.93")
     return sorted(peers)

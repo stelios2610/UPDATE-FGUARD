@@ -1,8 +1,8 @@
 {
-  "version": "1.0.37",
-  "date": "2026-11-16",
+  "version": "1.0.38",
+  "date": "2026-11-22",
   "product": "FGUARD",
   "changelog": [
-    "App Block now sits on every LAN, including the second Tavros network and VLAN 20. The Tavros LAN is no longer let through before the check. VPN and the other site stay on the same path."
+    "When a site's public IP changes in DNS, the other firewall updates the WireGuard peer and the WAN allow. The tunnel is not restarted."
   ]
 }
