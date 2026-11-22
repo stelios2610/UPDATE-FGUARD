@@ -1,8 +1,8 @@
 {
-  "version": "1.0.38",
+  "version": "1.0.39",
   "date": "2026-11-22",
   "product": "FGUARD",
   "changelog": [
-    "When a site's public IP changes in DNS, the other firewall updates the WireGuard peer and the WAN allow. The tunnel is not restarted."
+    "Licenses are signed with a private key that stays off the firewall. A license made before this version no longer counts."
   ]
 }
