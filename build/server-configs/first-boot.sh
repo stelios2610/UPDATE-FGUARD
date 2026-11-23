@@ -205,7 +205,7 @@ cat > /etc/motd << 'MOTD'
   ║                                                      ║
   ║  Web UI:  https://10.0.0.1:8080  (LAN only)          ║
   ║  SSH:     ssh stelios@10.0.0.1   (LAN only)          ║
-  ║  Login:   admin / admin                              ║
+  ║  Web UI asks for a new admin password on first sign-in. ║
   ║                                                      ║
   ║  Connect a PC to the LAN port to access the GUI      ║
   ╚══════════════════════════════════════════════════════╝

@@ -22,7 +22,9 @@ import io
 import psutil
 from web.auth import (require_auth, attempt_login, create_session,
                       delete_session, get_session_user, ensure_default_admin,
-                      hash_password, is_rate_limited, COOKIE_NAME, SESSION_HOURS)
+                      is_rate_limited, COOKIE_NAME, SESSION_HOURS,
+                      password_change_required, change_admin_password,
+                      filter_settings_update)
 
 from db import database
 from core import (monitor, ips, rules_engine, web_filter, app_control,
@@ -103,6 +105,11 @@ if _IS_LINUX:
         pass
     try:
         app_control.restore_gateway_blocks()
+    except Exception:
+        pass
+    try:
+        from core import traffic_security as _traffic
+        _traffic.restore()
     except Exception:
         pass
     try:
@@ -369,7 +376,8 @@ def _ctx(request, **kw):
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request, error: str = "", next: str = "/"):
     if get_session_user(request):
-        return RedirectResponse(url="/", status_code=302)
+        target = "/account/password" if password_change_required() else "/"
+        return RedirectResponse(url=target, status_code=302)
     return templates.TemplateResponse(request, "login.html", {"error": error, "app_version": APP_VERSION})
 
 @app.post("/login")
@@ -385,8 +393,12 @@ async def login_submit(request: Request,
                                           status_code=429)
     if attempt_login(username, password, otp):
         token = create_session(username)
-        # Only allow relative redirects to prevent open redirect attacks
-        safe_next = next if (next and next.startswith("/") and not next.startswith("//")) else "/"
+        # Only allow relative redirects to prevent open redirect attacks.
+        # The factory password can open the password page and nothing else.
+        if password_change_required():
+            safe_next = "/account/password"
+        else:
+            safe_next = next if (next and next.startswith("/") and not next.startswith("//")) else "/"
         response = RedirectResponse(url=safe_next, status_code=302)
         response.set_cookie(
             COOKIE_NAME, token,
@@ -404,6 +416,30 @@ async def logout(request: Request):
     response = RedirectResponse(url="/login", status_code=302)
     response.delete_cookie(COOKIE_NAME)
     return response
+
+
+@app.get("/account/password", response_class=HTMLResponse)
+async def password_page(request: Request, error: str = ""):
+    return templates.TemplateResponse(request, "password.html", {
+        "error": error, "app_version": APP_VERSION,
+    })
+
+
+@app.post("/account/password", response_class=HTMLResponse)
+async def password_submit(request: Request,
+                          current_password: str = Form(...),
+                          new_password: str = Form(...),
+                          confirm_password: str = Form(...)):
+    if new_password != confirm_password:
+        return templates.TemplateResponse(request, "password.html", {
+            "error": "New passwords do not match", "app_version": APP_VERSION,
+        }, status_code=400)
+    ok, message = change_admin_password(current_password, new_password)
+    if not ok:
+        return templates.TemplateResponse(request, "password.html", {
+            "error": message, "app_version": APP_VERSION,
+        }, status_code=400)
+    return RedirectResponse(url="/", status_code=302)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -445,6 +481,14 @@ async def webfilter_page(request: Request):
 async def ips_page(request: Request):
     return _ctx(request, template="ips.html",
                 signatures=ips.get_signatures(), alerts=ips.get_alerts(100))
+
+@app.get("/traffic", response_class=HTMLResponse)
+async def traffic_page(request: Request):
+    from core import traffic_security
+    report = traffic_security.summarize_blocks(database.get_logs(limit=300, action_filter="THREAT"))
+    return _ctx(request, template="traffic.html",
+                traffic=traffic_security.status(), report=report,
+                nodes=database.get_fleet_nodes())
 
 @app.get("/vpn", response_class=HTMLResponse)
 async def vpn_page(request: Request):
@@ -1292,6 +1336,167 @@ async def api_ips_blocked(): return {"blocked": ips.get_blocked_ips()}
 async def api_ips_unblock(ip: str): ips.unblock_ip(ip); return {"status":"ok"}
 
 
+def _traffic_planes():
+    wan = database.get_setting("wan_interface", "") or ""
+    lan = database.get_setting("lan_interface", "") or ""
+    lans = [item.strip() for item in lan.split(",") if item.strip()]
+    ifaces = list(lans)
+    if wan and wan not in ifaces:
+        ifaces.append(wan)
+    return wan, lans, ifaces
+
+
+@app.get("/api/traffic/status")
+async def api_traffic_status():
+    from core import traffic_security
+    report = traffic_security.summarize_blocks(database.get_logs(limit=300, action_filter="THREAT"))
+    return {"status": traffic_security.status(), "report": report}
+
+
+@app.post("/api/traffic/ips")
+async def api_traffic_ips(request: Request):
+    _require_license("Traffic IPS")
+    from core import traffic_security
+    from core.app_control import PREDEFINED_APPS
+    data = await request.json()
+    enabled = bool(data.get("enabled"))
+    wan, lans, ifaces = _traffic_planes()
+    ok, msg = traffic_security.apply_ips(enabled, [], ifaces, wan, lans)
+    if ok and enabled:
+        apps = [
+            {"name": name, "domains": cfg.get("domains") or []}
+            for name, cfg in PREDEFINED_APPS.items()
+            if database.get_setting("appblock_%s" % name) == "1"
+        ]
+        traffic_security.apply_app_rules(apps)
+        traffic_security.start_eve_reader()
+    if ok:
+        database.set_setting("traffic_ips_enabled", "1" if enabled else "0")
+    return {"status": "ok" if ok else "error", "message": msg}
+
+
+@app.post("/api/traffic/categories")
+async def api_traffic_categories(request: Request):
+    _require_license("Web categories")
+    from core import traffic_security
+    data = await request.json()
+    if not data.get("enabled"):
+        ok, msg = traffic_security.remove_categories()
+        if ok:
+            database.set_setting("traffic_categories_enabled", "0")
+        return {"status": "ok" if ok else "error", "message": msg}
+    domains, errors = traffic_security.update_category_feeds()
+    if not domains:
+        return {"status": "error", "message": "; ".join(errors) or "No domains downloaded"}
+    ok, msg = traffic_security.apply_categories(domains)
+    if ok:
+        database.set_setting("traffic_categories_enabled", "1")
+    return {"status": "ok" if ok else "error", "message": msg, "domains": len(domains), "errors": errors}
+
+
+@app.post("/api/traffic/av")
+async def api_traffic_av(request: Request):
+    _require_license("Download antivirus")
+    data = await request.json()
+    enabled = "1" if data.get("enabled") else "0"
+    database.set_setting("traffic_av_enabled", enabled)
+    from core import traffic_security
+    traffic_security.start_eve_reader()
+    return {"status": "ok", "message": "Download scanning %s" % ("on" if enabled == "1" else "off")}
+
+
+@app.post("/api/traffic/tls")
+async def api_traffic_tls(request: Request):
+    _require_license("HTTPS inspection")
+    from core import traffic_security
+    data = await request.json()
+    enabled = bool(data.get("enabled"))
+    if not enabled:
+        ok, msg = traffic_security.disable_tls()
+        database.set_setting("tls_inspect_enabled", "0")
+        return {"status": "ok" if ok else "error", "message": msg}
+    lan = (database.get_setting("lan_interface", "") or "").split(",")[0].strip()
+    try:
+        ok, msg = traffic_security.enable_tls(bool(data.get("confirm")), lan)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if ok:
+        database.set_setting("tls_inspect_enabled", "1")
+        database.set_setting("tls_inspect_confirmed", "1")
+    return {"status": "ok" if ok else "error", "message": msg}
+
+
+@app.post("/api/traffic/measure")
+async def api_traffic_measure():
+    from core import traffic_security
+    ok, result = traffic_security.measure_interfaces(1)
+    if not ok:
+        return {"status": "error", "message": result}
+    return {"status": "ok", "interfaces": result, "note": "Megabits measured on this firewall for one second. This is not a lab IPS throughput rating."}
+
+
+@app.get("/api/fleet")
+async def api_fleet_list():
+    import secrets as _secrets
+    token = database.get_setting("fleet_token", "") or ""
+    if not token:
+        token = _secrets.token_urlsafe(24)
+        database.set_setting("fleet_token", token)
+    nodes = []
+    for node in database.get_fleet_nodes():
+        item = dict(node)
+        item["token"] = "saved"
+        nodes.append(item)
+    return {"local_token": token, "nodes": nodes}
+
+
+@app.post("/api/fleet")
+async def api_fleet_add(request: Request):
+    from core.fleet import normalize_base_url
+    data = await request.json()
+    try:
+        base = normalize_base_url(data.get("base_url") or "")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    token = (data.get("token") or "").strip()
+    name = (data.get("name") or base).strip()[:80]
+    if not token:
+        raise HTTPException(400, "The other firewall's fleet token is required")
+    database.add_fleet_node(name, base, token)
+    return {"status": "ok"}
+
+
+@app.delete("/api/fleet/{node_id}")
+async def api_fleet_delete(node_id: int):
+    database.delete_fleet_node(node_id)
+    return {"status": "ok"}
+
+
+@app.get("/api/fleet/status")
+async def api_fleet_status():
+    from core.fleet import fetch_health
+    results = []
+    for node in database.get_fleet_nodes():
+        try:
+            health = fetch_health(node["base_url"], node["token"])
+            results.append({"id": node["id"], "name": node["name"], "ok": True, "health": health})
+        except Exception as exc:
+            results.append({"id": node["id"], "name": node["name"], "ok": False, "error": str(exc)})
+    return {"nodes": results}
+
+
+@app.get("/api/fleet/health")
+async def api_fleet_health(request: Request):
+    from core.fleet import token_matches
+    from core import traffic_security
+    expected = database.get_setting("fleet_token", "") or ""
+    presented = request.headers.get("x-fguard-fleet", "")
+    if not token_matches(presented, expected):
+        raise HTTPException(401, "Fleet token rejected")
+    state = traffic_security.status()
+    return {"version": APP_VERSION, "ips": state["ips_enabled"], "suricata": state["suricata_active"]}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # REST API — Security Services (RED, AV, DLP, Spam, Geo)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1735,8 +1940,9 @@ async def api_get_settings():
 @app.post("/api/settings")
 async def api_save_settings(request: Request):
     data = await request.json()
-    for k,v in data.items(): database.set_setting(k,v)
-    return {"status":"ok"}
+    for k, v in filter_settings_update(data).items():
+        database.set_setting(k, v)
+    return {"status": "ok"}
 @app.post("/api/settings/sync-firewall")
 async def api_sync_fw():
     r = rules_engine.sync_all_rules()
@@ -1745,15 +1951,12 @@ async def api_sync_fw():
 @app.post("/api/settings/change-password")
 async def api_change_password(request: Request):
     data = await request.json()
-    current = data.get("current_password", "")
-    new_pw  = data.get("new_password", "")
-    if not new_pw or len(new_pw) < 8:
-        raise HTTPException(400, "Password must be at least 8 characters")
-    stored_hash = database.get_setting("admin_password_hash", "")
-    from web.auth import verify_password
-    if not verify_password(current, stored_hash):
-        raise HTTPException(401, "Current password is incorrect")
-    database.set_setting("admin_password_hash", hash_password(new_pw))
+    ok, message = change_admin_password(
+        data.get("current_password", ""), data.get("new_password", ""),
+    )
+    if not ok:
+        status = 401 if message == "Current password is incorrect" else 400
+        raise HTTPException(status, message)
     return {"status": "ok"}
 
 @app.post("/api/auth/mfa/begin")
@@ -2307,6 +2510,13 @@ async def api_get_ha():
 @app.post("/api/ha/config")
 async def api_save_ha(request: Request):
     data = await request.json()
+    key = (data.get("peer_hostkey") or "").strip()
+    if key:
+        try:
+            ha_manager.parse_host_key(key)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        data["peer_hostkey"] = " ".join(ha_manager.parse_host_key(key))
     database.save_ha_config(**data)
     return {"status": "ok"}
 

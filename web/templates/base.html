@@ -92,7 +92,7 @@
   </div>
 
   <!-- ── SECURITY SERVICES ────────────────────────────────────────────────── -->
-  <div class="nav-group {% if active in ['webfilter','ips','security','discovery'] %}open{% endif %}" id="grp-security">
+  <div class="nav-group {% if active in ['webfilter','ips','security','discovery','traffic'] %}open{% endif %}" id="grp-security">
     <div class="nav-group-header" onclick="toggleGroup('grp-security')">
       <span class="nav-group-icon">🔰</span>
       <span>Security Services</span>
@@ -104,6 +104,9 @@
       </a>
       <a href="/ips" class="nav-item {% if active=='ips' %}active{% endif %}">
         <span class="nav-dot"></span> Intrusion Prevention
+      </a>
+      <a href="/traffic" class="nav-item {% if active=='traffic' %}active{% endif %}">
+        <span class="nav-dot"></span> Traffic Security
       </a>
       <a href="/security?tab=av" class="nav-item {% if active=='security-av' %}active{% endif %}">
         <span class="nav-dot"></span> Gateway AntiVirus

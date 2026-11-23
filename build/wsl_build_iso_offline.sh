@@ -72,8 +72,11 @@ instance-id: fguard-1
 local-hostname: fguard
 META
 
-PASS_HASH=$(python3 -c "import crypt; print(crypt.crypt('FGUARD2024!', crypt.mksalt(crypt.METHOD_SHA512)))" 2>/dev/null \
-           || echo '$6$fguard$placeholder')
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/initial-password.sh"
+fguard_initial_password "${OUTPUT}.initial-password.txt"
+PASS_HASH="$(fguard_password_hash)"
 
 cat > "$CUSTOM/nocloud/user-data" << USERDATA
 #cloud-config
@@ -129,10 +132,10 @@ autoinstall:
     - whiptail
   user-data:
     chpasswd:
-      expire: false
+      expire: true
   late-commands:
     - curtin in-target --target=/target -- bash /cdrom/fguard_setup/install.sh
-    - "echo 'admin ALL=(ALL) NOPASSWD: ALL' > /target/etc/sudoers.d/admin"
+    - "echo 'admin ALL=(ALL) ALL' > /target/etc/sudoers.d/admin"
     - chmod 440 /target/etc/sudoers.d/admin
 USERDATA
 log "Autoinstall config written"
@@ -346,5 +349,6 @@ echo -e "${G}  ║   NO internet needed for app install         ║${NC}"
 echo -e "${G}  ║   (apt packages still from Ubuntu repos)     ║${NC}"
 echo -e "${G}  ║                                              ║${NC}"
 echo -e "${G}  ║   https://10.0.0.1:8080  (LAN only)         ║${NC}"
-echo -e "${G}  ║   SSH:  admin@10.0.0.1 / FGUARD2024!    ║${NC}"
+echo -e "${G}  ║   SSH password: ${OUTPUT}.initial-password.txt ║${NC}"
+echo -e "${G}  ║   It expires at the first login.              ║${NC}"
 echo -e "${G}  ╚══════════════════════════════════════════════╝${NC}"

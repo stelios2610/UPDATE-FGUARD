@@ -96,6 +96,11 @@
       <label class="form-label">Peer IP Address <span class="text-muted">(other node's LAN IP)</span></label>
       <input class="form-control font-mono" id="ha-peer" value="{{ ha.peer_ip or '' }}" placeholder="e.g. 10.0.0.2">
     </div>
+    <div class="form-group">
+      <label class="form-label">Peer SSH host key</label>
+      <textarea class="form-control font-mono" id="ha-hostkey" rows="3" placeholder="ssh-ed25519 AAAA...">{{ ha.peer_hostkey or '' }}</textarea>
+      <div class="text-muted" style="font-size:11px">On the peer, run <code>ssh-keyscan -t ed25519 &lt;peer-ip&gt;</code> and paste the ssh-ed25519 line. Config sync checks this key and refuses any other.</div>
+    </div>
     <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:12px">
       <input type="checkbox" id="ha-preempt" {% if ha.preempt %}checked{% endif %}>
       <div>
@@ -133,7 +138,8 @@
     </div>
   </div>
   <div class="alert alert-info" style="margin-top:12px">
-    <strong>Requirement:</strong> SSH key-based auth must be set up: <code>ssh-copy-id root@&lt;BACKUP_IP&gt;</code>
+    <strong>Requirement:</strong> SSH key-based auth must be set up: <code>ssh-copy-id root@&lt;BACKUP_IP&gt;</code>.
+    Paste that peer's <code>ssh-ed25519</code> host key above. Sync will not connect until the key matches.
   </div>
   <button class="btn btn-secondary" onclick="saveHAConfig()">Save Sync Settings</button>
   <button class="btn btn-primary" onclick="syncNow()" style="margin-left:8px">Sync Now</button>
@@ -153,6 +159,7 @@
         <li>Set Auth Password (same on both)</li>
         <li>Enable Auto Sync, set Sync Target = BACKUP IP</li>
         <li>Run: <code>ssh-copy-id root@&lt;BACKUP_IP&gt;</code></li>
+        <li>Paste the peer host key from <code>ssh-keyscan -t ed25519 &lt;BACKUP_IP&gt;</code></li>
         <li>Click <strong>Apply / Start</strong></li>
       </ol>
     </div>
@@ -209,6 +216,7 @@ async function saveHAConfig() {
     advert_interval: parseFloat(document.getElementById('ha-advert').value) || 1,
     auth_pass: document.getElementById('ha-auth').value,
     peer_ip: document.getElementById('ha-peer').value.trim(),
+    peer_hostkey: document.getElementById('ha-hostkey').value.trim(),
     preempt: document.getElementById('ha-preempt').checked ? 1 : 0,
     sync_enabled: document.getElementById('ha-sync-enabled').checked ? 1 : 0,
     sync_peer: document.getElementById('ha-sync-peer').value.trim(),

@@ -77,10 +77,11 @@ instance-id: fguard-utc-1
 local-hostname: fguard
 META
 
-PASS_HASH=$(python3 -c "
-import crypt
-print(crypt.crypt('FGuard2024!', crypt.mksalt(crypt.METHOD_SHA512)))
-" 2>/dev/null || echo '$6$fguard$placeholder')
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/initial-password.sh"
+fguard_initial_password "${OUTPUT}.initial-password.txt"
+PASS_HASH="$(fguard_password_hash)"
 
 # IMPORTANT: late-commands copy files directly to /target/ (no curtin in-target).
 # Inside the chroot that curtin in-target creates, /cdrom is NOT accessible.
@@ -136,7 +137,7 @@ autoinstall:
     - htop
   user-data:
     chpasswd:
-      expire: false
+      expire: true
   late-commands:
     # Copy FGUARD app + wheels directly to /target (no chroot — /cdrom accessible here)
     - mkdir -p /target/opt/fguard /target/opt/fguard-wheels /target/etc/fguard
@@ -169,7 +170,7 @@ autoinstall:
     - curtin in-target --target=/target -- systemctl disable apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service
     - curtin in-target --target=/target -- apt-get remove --purge -y unattended-upgrades
     # sudoers
-    - "echo 'stelios ALL=(ALL) NOPASSWD: ALL' > /target/etc/sudoers.d/stelios"
+    - "echo 'stelios ALL=(ALL) ALL' > /target/etc/sudoers.d/stelios"
     - chmod 440 /target/etc/sudoers.d/stelios
 USERDATA
 
@@ -287,7 +288,8 @@ echo -e "${G}  ║   Boot → Ubuntu installs → reboot:           ║${NC}"
 echo -e "${G}  ║   first-boot.sh: network + venv + services   ║${NC}"
 echo -e "${G}  ║                                              ║${NC}"
 echo -e "${G}  ║   Web UI:  https://10.0.0.1:8080             ║${NC}"
-echo -e "${G}  ║   SSH:     stelios@10.0.0.1 / FGuard2024!    ║${NC}"
-echo -e "${G}  ║   Login:   admin / admin                     ║${NC}"
+echo -e "${G}  ║   SSH password: ${OUTPUT}.initial-password.txt ║${NC}"
+echo -e "${G}  ║   It expires at the first login.              ║${NC}"
+echo -e "${G}  ║   Web UI asks for a new admin password.       ║${NC}"
 echo -e "${G}  ╚══════════════════════════════════════════════╝${NC}"
 echo ""

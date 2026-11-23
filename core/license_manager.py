@@ -47,17 +47,18 @@ def _get_all_macs():
     return macs
 
 
-def _signature_ok(payload, signature):
+def verify_ed25519(payload, signature, public_key_pem=None):
     """True when signature is an Ed25519 signature of payload by our private key."""
     if not isinstance(signature, (bytes, bytearray)) or len(signature) != 64:
         return False
+    pem = (public_key_pem or PUBLIC_KEY_PEM).strip() + "\n"
     try:
         with tempfile.TemporaryDirectory() as tmp:
             pub = os.path.join(tmp, "pub.pem")
             msg = os.path.join(tmp, "msg.bin")
             sig = os.path.join(tmp, "sig.bin")
             with open(pub, "w", newline="\n") as handle:
-                handle.write(PUBLIC_KEY_PEM.strip() + "\n")
+                handle.write(pem)
             with open(msg, "wb") as handle:
                 handle.write(payload)
             with open(sig, "wb") as handle:
@@ -74,7 +75,11 @@ def _signature_ok(payload, signature):
         return False
 
 
-def inspect_key(license_key, macs):
+def _signature_ok(payload, signature, public_key_pem=None):
+    return verify_ed25519(payload, signature, public_key_pem)
+
+
+def inspect_key(license_key, macs, public_key_pem=None):
     """Validate one license blob against an explicit set of MAC addresses."""
     empty = {"days_remaining": 0, "customer": "", "expires": "", "issued": ""}
     try:
@@ -89,7 +94,7 @@ def inspect_key(license_key, macs):
         if not signature_b64:
             return "invalid", empty
         signature = base64.b64decode(signature_b64, validate=True)
-        if not _signature_ok(canonical_payload(data), signature):
+        if not _signature_ok(canonical_payload(data), signature, public_key_pem):
             return "invalid", empty
 
         license_mac = str(data.get("mac", "")).upper()

@@ -113,6 +113,72 @@ PREDEFINED_APPS = {
         "domains": ["teamspeak.com", "teamspeak.net"],
         "ports": [("udp", 9987), ("tcp", 10011), ("tcp", 30033)],
     },
+    "Facebook": {
+        "description": "Social network",
+        "icon": "📘",
+        "domains": ["facebook.com", "fbcdn.net", "facebook.net"],
+        "ports": [],
+    },
+    "Instagram": {
+        "description": "Photo social network",
+        "icon": "📷",
+        "domains": ["instagram.com", "cdninstagram.com"],
+        "ports": [],
+    },
+    "YouTube": {
+        "description": "Video streaming",
+        "icon": "▶",
+        "domains": ["youtube.com", "googlevideo.com", "ytimg.com", "youtu.be"],
+        "ports": [],
+    },
+    "Netflix": {
+        "description": "Video streaming",
+        "icon": "🎬",
+        "domains": ["netflix.com", "nflxvideo.net", "nflximg.net"],
+        "ports": [],
+    },
+    "Steam": {
+        "description": "Game store and client",
+        "icon": "🎮",
+        "domains": ["steampowered.com", "steamcommunity.com", "steamstatic.com"],
+        "ports": [],
+    },
+    "Twitch": {
+        "description": "Live streaming",
+        "icon": "📺",
+        "domains": ["twitch.tv", "ttvnw.net", "jtvnw.net"],
+        "ports": [],
+    },
+    "Spotify": {
+        "description": "Music streaming",
+        "icon": "🎵",
+        "domains": ["spotify.com", "scdn.co", "spotifycdn.com"],
+        "ports": [],
+    },
+    "Snapchat": {
+        "description": "Social messaging",
+        "icon": "👻",
+        "domains": ["snapchat.com", "snap.com"],
+        "ports": [],
+    },
+    "Reddit": {
+        "description": "Forums",
+        "icon": "👽",
+        "domains": ["reddit.com", "redditstatic.com", "redd.it"],
+        "ports": [],
+    },
+    "LinkedIn": {
+        "description": "Professional network",
+        "icon": "💼",
+        "domains": ["linkedin.com", "licdn.com"],
+        "ports": [],
+    },
+    "Signal": {
+        "description": "Private messenger",
+        "icon": "💬",
+        "domains": ["signal.org", "whispersystems.org"],
+        "ports": [],
+    },
 }
 
 

@@ -7,6 +7,8 @@ Architecture:
   - Config sync: MASTER periodically rsyncs its config/DB to BACKUP
 """
 import os
+import base64
+import ipaddress
 import subprocess
 import threading
 import time
@@ -17,6 +19,15 @@ from core.platform import IS_LINUX, run
 KEEPALIVED_CONF = "/etc/keepalived/keepalived.conf"
 KEEPALIVED_D    = "/etc/keepalived/keepalived.d"
 NOTIFY_SCRIPT   = "/etc/keepalived/fguard-notify.sh"
+KNOWN_HOSTS     = "/etc/fguard/ha_known_hosts"
+HOST_KEY_TYPES = {
+    "ssh-ed25519",
+    "ssh-rsa",
+    "ecdsa-sha2-nistp256",
+    "ecdsa-sha2-nistp384",
+    "ecdsa-sha2-nistp521",
+}
+DEFAULT_VRRP_PASSWORD = "AegisHA"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -36,11 +47,13 @@ def write_keepalived_config():
     router_id   = cfg.get("router_id", 51)
     priority    = cfg.get("priority", 100)
     advert      = cfg.get("advert_interval", 1)
-    auth_pass   = cfg.get("auth_pass", "AegisHA")
+    auth_pass   = (cfg.get("auth_pass") or "").strip()
     preempt     = "preempt" if cfg.get("preempt", 1) else "nopreempt"
 
     if not vip:
         return False, "Virtual IP is required"
+    if not auth_pass or auth_pass == DEFAULT_VRRP_PASSWORD:
+        return False, "Set a VRRP auth password on both nodes before starting HA"
 
     os.makedirs("/etc/keepalived", exist_ok=True)
     _write_notify_script()
@@ -173,8 +186,26 @@ def apply_ha():
     ok3, out, err = run(["systemctl", "restart", "keepalived"])
     if ok3:
         database.add_log("INFO", details="HA keepalived started/reloaded")
+        _start_session_sync(database.get_ha_config())
         return True, "keepalived restarted"
     return False, err or out
+
+
+def _start_session_sync(cfg):
+    """Keep existing connections across failover. A missing daemon leaves VRRP running."""
+    try:
+        from core.session_sync import install_session_sync
+        from core.platform import run as platform_run
+        iface = cfg.get("interface") or "eth1"
+        peer = (cfg.get("peer_ip") or cfg.get("sync_peer") or "").strip()
+        ok, out, _ = platform_run(["ip", "-4", "-o", "addr", "show", "dev", iface])
+        local_ip = ""
+        if ok and out:
+            local_ip = out.split()[3].split("/")[0]
+        sync_ok, sync_msg = install_session_sync(local_ip, peer, iface)
+        database.add_log("INFO" if sync_ok else "WARN", details="HA session sync: " + sync_msg)
+    except Exception as exc:
+        database.add_log("WARN", details="HA session sync: " + str(exc))
 
 
 def stop_ha():
@@ -273,33 +304,107 @@ def sync_now():
     return _do_sync(peer)
 
 
+def parse_host_key(text):
+    """Accept 'ssh-ed25519 AAAA...' or a full ssh-keyscan line."""
+    parts = (text or "").strip().split()
+    if len(parts) >= 3 and parts[1] in HOST_KEY_TYPES:
+        parts = parts[1:3]
+    if len(parts) != 2 or parts[0] not in HOST_KEY_TYPES:
+        raise ValueError("Peer host key must be one line: ssh-ed25519 AAAA...")
+    keytype, blob = parts
+    try:
+        raw = base64.b64decode(blob, validate=True)
+    except Exception as exc:
+        raise ValueError("Peer host key is not valid base64") from exc
+    if len(raw) < 16:
+        raise ValueError("Peer host key is too short")
+    return keytype, blob
+
+
+def known_hosts_line(host, host_key):
+    peer = (host or "").strip()
+    try:
+        ipaddress.ip_address(peer)
+    except ValueError as exc:
+        raise ValueError("HA peer must be an IP address") from exc
+    keytype, blob = parse_host_key(host_key)
+    return "%s %s %s\n" % (peer, keytype, blob)
+
+
+def rsync_rsh(known_hosts=KNOWN_HOSTS):
+    """ssh command rsync runs. Host keys are checked against a pinned file."""
+    return (
+        "ssh -o StrictHostKeyChecking=yes "
+        "-o UserKnownHostsFile=%s "
+        "-o CheckHostIP=yes -o ConnectTimeout=5 -o BatchMode=yes"
+        % known_hosts
+    )
+
+
+def write_known_hosts(peer_ip, host_key, path=None):
+    path = path or KNOWN_HOSTS
+    line = known_hosts_line(peer_ip, host_key)
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(line)
+    return line
+
+
 def _do_sync(peer_ip):
     """Rsync FGUARD config and database to the peer.
 
     Copies the directory this process is running from. Live boxes use
     /opt/aegisguard. --delete is not used, so a peer is never wiped.
+    The peer SSH host key must already be saved. Sync refuses any other key.
     """
     if not IS_LINUX:
         return False, "Sync requires Linux"
+    try:
+        ipaddress.ip_address((peer_ip or "").strip())
+    except ValueError:
+        return False, "HA peer must be an IP address"
+    cfg = database.get_ha_config()
+    host_key = (cfg.get("peer_hostkey") or "").strip()
+    if not host_key:
+        return False, "Set the peer SSH host key before sync. On the peer run: ssh-keyscan -t ed25519 %s" % peer_ip
+    try:
+        write_known_hosts(peer_ip, host_key)
+    except ValueError as exc:
+        return False, str(exc)
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if not base.endswith("/"):
         base += "/"
+    remote = "root@%s:%s" % (peer_ip.strip(), base)
     ok, _, err = run([
         "rsync", "-az",
         "--exclude=*.pyc", "--exclude=__pycache__",
         "--exclude=build/iso-work", "--exclude=build/*.iso",
-        "-e", "ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5",
+        "-e", rsync_rsh(),
         base,
-        f"root@{peer_ip}:{base}"
+        remote,
     ], timeout=60)
 
     if ok:
-        # Reload peer's fguard service
-        run(["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
-             f"root@{peer_ip}", "systemctl reload fguard"], timeout=10)
+        run(ssh_reload_command(peer_ip), timeout=10)
         database.add_log("INFO", details=f"HA sync completed to {peer_ip}")
         return True, f"Synced to {peer_ip}"
     return False, err
+
+
+def ssh_reload_command(peer_ip):
+    return [
+        "ssh",
+        "-o", "StrictHostKeyChecking=yes",
+        "-o", "UserKnownHostsFile=%s" % KNOWN_HOSTS,
+        "-o", "CheckHostIP=yes",
+        "-o", "ConnectTimeout=5",
+        "-o", "BatchMode=yes",
+        "root@%s" % peer_ip.strip(),
+        "systemctl reload fguard",
+    ]
 
 
 def _sync_loop():

@@ -262,7 +262,11 @@ cat > "${CHROOT}/etc/motd" << 'EOF'
 EOF
 
 # Root user + SSH
-echo "root:FGUARD2024!" | chroot "$CHROOT" chpasswd
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/initial-password.sh"
+fguard_initial_password "${SCRIPT_DIR}/initial-root-password.txt"
+echo "root:${FGUARD_INITIAL_PASSWORD}" | chroot "$CHROOT" chpasswd
+chroot "$CHROOT" chage -d 0 root || true
 sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' \
     "${CHROOT}/etc/ssh/sshd_config" 2>/dev/null || true
 
@@ -449,7 +453,8 @@ echo -e "${G}  ║   USB:      dd if=fguard.iso of=/dev/sdX bs=4M  ║${NC}"
 echo -e "${G}  ║             or balenaEtcher on Windows              ║${NC}"
 echo -e "${G}  ║                                                     ║${NC}"
 echo -e "${G}  ║   After install, access: http://10.0.0.1:8080       ║${NC}"
-echo -e "${G}  ║   Default root password:  FGUARD2024!           ║${NC}"
+echo -e "${G}  ║   Root password: build/initial-root-password.txt ║${NC}"
+echo -e "${G}  ║   It expires at the first console login.        ║${NC}"
 echo -e "${G}  ╚════════════════════════════════════════════════════╝${NC}"
 echo ""
 

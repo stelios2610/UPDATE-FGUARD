@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block title %}Traffic Security{% endblock %}
+{% block page_title %}Traffic Security{% endblock %}
+{% set active = "traffic" %}
+
+{% block content %}
+
+<div class="card" style="margin-bottom:16px">
+  <div class="card-header">
+    <div>
+      <div class="card-title">Client traffic</div>
+      <div class="card-sub">These services stay off until you turn them on. A stopped IPS does not drop client traffic.</div>
+    </div>
+  </div>
+  <div class="grid grid-2">
+    <div>
+      <div class="card-title">Signature IPS</div>
+      <p class="text-muted">Suricata inspects LAN to WAN traffic. Rules are the application names you already block, plus the block list below.</p>
+      <button class="btn btn-success" onclick="setIps(true)">Enable</button>
+      <button class="btn btn-secondary" onclick="setIps(false)">Disable</button>
+      <div class="text-muted" style="margin-top:8px">Status: {{ 'on' if traffic.ips_enabled else 'off' }} · process {{ 'running' if traffic.suricata_active else 'stopped' }}</div>
+    </div>
+    <div>
+      <div class="card-title">URL categories</div>
+      <p class="text-muted">Malware, phishing, adult, gambling, and ads from the Block List Project. DNS only. HTTPS sites are not decrypted.</p>
+      <button class="btn btn-success" onclick="setCategories(true)">Download and enable</button>
+      <button class="btn btn-secondary" onclick="setCategories(false)">Disable</button>
+      <div class="text-muted" style="margin-top:8px">Status: {{ 'on' if traffic.categories_enabled else 'off' }}</div>
+    </div>
+    <div>
+      <div class="card-title">Download antivirus</div>
+      <p class="text-muted">ClamAV scans files Suricata stores from client downloads. It does not scan traffic that stays encrypted.</p>
+      <button class="btn btn-success" onclick="setAv(true)">Enable</button>
+      <button class="btn btn-secondary" onclick="setAv(false)">Disable</button>
+      <div class="text-muted" style="margin-top:8px">Status: {{ 'on' if traffic.av_enabled else 'off' }}</div>
+    </div>
+    <div>
+      <div class="card-title">HTTPS inspection</div>
+      <p class="text-muted">Decrypts client HTTPS. Sites and apps break until every device trusts the firewall CA. Leave this off unless you accept that.</p>
+      <label style="display:block;margin:8px 0"><input type="checkbox" id="tls-confirm"> I confirm clients will install the firewall CA</label>
+      <button class="btn btn-danger" onclick="setTls(true)">Enable inspection</button>
+      <button class="btn btn-secondary" onclick="setTls(false)">Disable</button>
+      <div class="text-muted" style="margin-top:8px">Status: {{ 'on' if traffic.tls_enabled else 'off' }}</div>
+    </div>
+  </div>
+</div>
+
+<div class="grid grid-2" style="margin-bottom:16px">
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <div class="card-title">Measured throughput</div>
+        <div class="card-sub">One second of real interface counters on this firewall. This is not a lab IPS rating.</div>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="measure()">Measure</button>
+    </div>
+    <div id="measure-out" class="text-muted">No measurement yet.</div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <div class="card-title">Blocked traffic</div>
+        <div class="card-sub">{{ report.total }} recent threat events</div>
+      </div>
+    </div>
+    <table>
+      <thead><tr><th>Reason</th><th>Count</th></tr></thead>
+      <tbody>
+        {% for name, count in report.by_rule %}
+        <tr><td>{{ name }}</td><td>{{ count }}</td></tr>
+        {% else %}
+        <tr><td colspan="2" class="text-muted">Nothing blocked yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <div>
+      <div class="card-title">Other firewalls</div>
+      <div class="card-sub">Read-only health. This page does not push policy to other nodes.</div>
+    </div>
+    <button class="btn btn-secondary btn-sm" onclick="refreshFleet()">Refresh health</button>
+  </div>
+  <div class="text-muted" style="margin-bottom:8px">This firewall's token: <span id="local-token" class="font-mono">loading</span></div>
+  <div class="btn-group" style="margin-bottom:12px">
+    <input class="form-control" id="node-name" placeholder="Name" style="max-width:160px">
+    <input class="form-control" id="node-url" placeholder="https://other-firewall:8080" style="max-width:280px">
+    <input class="form-control" id="node-token" placeholder="Token from the other firewall" style="max-width:280px">
+    <button class="btn btn-success" onclick="addNode()">Add</button>
+  </div>
+  <table>
+    <thead><tr><th>Name</th><th>Address</th><th></th></tr></thead>
+    <tbody id="fleet-body">
+      {% for node in nodes %}
+      <tr>
+        <td>{{ node.name }}</td>
+        <td class="font-mono">{{ node.base_url }}</td>
+        <td><button class="btn btn-secondary btn-sm" onclick="deleteNode({{ node.id }})">Remove</button></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="3" class="text-muted">No other firewalls.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <pre id="fleet-health" class="text-muted" style="margin-top:12px;white-space:pre-wrap"></pre>
+</div>
+
+<script>
+async function setIps(enabled) {
+  try {
+    const data = await POST('/api/traffic/ips', {enabled});
+    toast(data.message || 'Saved', data.status === 'ok' ? 'success' : 'error');
+    if (data.status === 'ok') setTimeout(() => location.reload(), 600);
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function setCategories(enabled) {
+  try {
+    const data = await POST('/api/traffic/categories', {enabled});
+    toast(data.message || 'Saved', data.status === 'ok' ? 'success' : 'error');
+    if (data.status === 'ok') setTimeout(() => location.reload(), 600);
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function setAv(enabled) {
+  try {
+    const data = await POST('/api/traffic/av', {enabled});
+    toast(data.message || 'Saved', 'success');
+    setTimeout(() => location.reload(), 600);
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function setTls(enabled) {
+  try {
+    const data = await POST('/api/traffic/tls', {enabled, confirm: document.getElementById('tls-confirm').checked});
+    toast(data.message || 'Saved', data.status === 'ok' ? 'success' : 'error');
+    if (data.status === 'ok') setTimeout(() => location.reload(), 600);
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function measure() {
+  const box = document.getElementById('measure-out');
+  box.textContent = 'Measuring...';
+  try {
+    const data = await POST('/api/traffic/measure', {});
+    if (data.status !== 'ok') { box.textContent = data.message; return; }
+    box.textContent = Object.entries(data.interfaces).map(([name, rate]) =>
+      name + '  in ' + rate.rx_mbps + ' Mbps  out ' + rate.tx_mbps + ' Mbps').join('\n') || 'No interfaces.';
+  } catch (err) { box.textContent = err.message; }
+}
+async function loadToken() {
+  try {
+    const data = await GET('/api/fleet');
+    document.getElementById('local-token').textContent = data.local_token;
+  } catch (err) { document.getElementById('local-token').textContent = err.message; }
+}
+async function addNode() {
+  try {
+    await POST('/api/fleet', {
+      name: document.getElementById('node-name').value,
+      base_url: document.getElementById('node-url').value,
+      token: document.getElementById('node-token').value,
+    });
+    location.reload();
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function deleteNode(id) {
+  try { await DELETE('/api/fleet/' + id); location.reload(); }
+  catch (err) { toast(err.message, 'error'); }
+}
+async function refreshFleet() {
+  const box = document.getElementById('fleet-health');
+  box.textContent = 'Checking...';
+  try {
+    const data = await GET('/api/fleet/status');
+    box.textContent = data.nodes.map(node => node.name + ': ' + (node.ok ? JSON.stringify(node.health) : node.error)).join('\n') || 'No nodes.';
+  } catch (err) { box.textContent = err.message; }
+}
+loadToken();
+</script>
+{% endblock %}

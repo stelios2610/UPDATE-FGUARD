@@ -568,6 +568,7 @@ def initialize():
             advert_interval REAL DEFAULT 1,
             auth_pass TEXT DEFAULT '',
             peer_ip TEXT DEFAULT '',
+            peer_hostkey TEXT DEFAULT '',
             preempt INTEGER DEFAULT 1,
             sync_enabled INTEGER DEFAULT 1,
             sync_peer TEXT DEFAULT '',
@@ -577,6 +578,21 @@ def initialize():
     """)
 
     # ── Default HA config row ─────────────────────────────────────────────────
+    try:
+        c.execute("ALTER TABLE ha_config ADD COLUMN peer_hostkey TEXT DEFAULT ''")
+    except Exception:
+        pass
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS fleet_nodes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            base_url TEXT NOT NULL,
+            token TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+
     c.execute("INSERT OR IGNORE INTO ha_config (id, updated_at) VALUES (1, ?)",
               (datetime.now().isoformat(),))
 
@@ -2041,10 +2057,34 @@ def get_ha_config():
     return dict(row) if row else {}
 
 
+def get_fleet_nodes():
+    conn = get_connection()
+    rows = conn.execute("SELECT id, name, base_url, token, created_at FROM fleet_nodes ORDER BY id").fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def add_fleet_node(name, base_url, token):
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO fleet_nodes (name, base_url, token, created_at) VALUES (?, ?, ?, ?)",
+        (name, base_url, token, datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_fleet_node(node_id):
+    conn = get_connection()
+    conn.execute("DELETE FROM fleet_nodes WHERE id = ?", (node_id,))
+    conn.commit()
+    conn.close()
+
+
 def save_ha_config(**kwargs):
     allowed = {"enabled","role","interface","virtual_ip","virtual_ip_mask",
                "router_id","priority","advert_interval","auth_pass","peer_ip",
-               "preempt","sync_enabled","sync_peer","sync_interval"}
+               "peer_hostkey","preempt","sync_enabled","sync_peer","sync_interval"}
     fields = {k: v for k, v in kwargs.items() if k in allowed}
     fields["updated_at"] = datetime.now().isoformat()
     sets = ", ".join(f"{k} = ?" for k in fields)

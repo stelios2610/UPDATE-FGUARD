@@ -19,9 +19,20 @@ _sessions: dict = {}
 
 COOKIE_NAME = "fguard_session"
 SESSION_HOURS = 8
+MUST_CHANGE_KEY = "admin_must_change_password"
+FACTORY_PASSWORDS = {"admin", "FGUARD" + "2024!", "FGuard" + "2024!"}
 
 # Routes that don't require login
 PUBLIC_ROUTES = {"/login", "/favicon.ico"}
+# Reachable while the factory password is still in place.
+SETUP_ROUTES = {"/account/password", "/logout", "/api/settings/change-password"}
+SENSITIVE_SETTINGS = {
+    "admin_password_hash",
+    "admin_must_change_password",
+    "admin_mfa_secret",
+    "admin_mfa_pending",
+    "fleet_token",
+}
 
 # Only the admin (settings-based) can log in — multi-user auth_users table
 # entries are stored but cannot log in through the standard login flow.
@@ -73,11 +84,51 @@ def verify_password(password: str, stored_hash: str) -> bool:
 
 
 def ensure_default_admin():
-    """Create default admin if no password is set."""
+    """Create default admin if no password is set. The UI stays locked until it changes."""
     current = database.get_setting("admin_password_hash", "")
     if not current:
         database.set_setting("admin_password_hash", hash_password("admin"))
         database.set_setting("admin_username", "admin")
+        database.set_setting(MUST_CHANGE_KEY, "1")
+
+
+def password_change_required():
+    """True until the factory admin password has been replaced."""
+    flag = database.get_setting(MUST_CHANGE_KEY, "")
+    if flag == "1":
+        return True
+    if flag == "0":
+        return False
+    stored = database.get_setting("admin_password_hash", "")
+    required = verify_password("admin", stored)
+    database.set_setting(MUST_CHANGE_KEY, "1" if required else "0")
+    return required
+
+
+def change_admin_password(current, new):
+    """Replace the admin password. Returns (ok, message)."""
+    if not new or len(new) < 8:
+        return False, "Password must be at least 8 characters"
+    if new in FACTORY_PASSWORDS or new.lower() == "admin":
+        return False, "Choose a password that is not the factory password"
+    stored_hash = database.get_setting("admin_password_hash", "")
+    if not verify_password(current, stored_hash):
+        return False, "Current password is incorrect"
+    database.set_setting("admin_password_hash", hash_password(new))
+    database.set_setting(MUST_CHANGE_KEY, "0")
+    return True, "ok"
+
+
+def sensitive_setting(key):
+    text = str(key)
+    return text in SENSITIVE_SETTINGS or text.startswith("session:")
+
+
+def filter_settings_update(data):
+    """Drop keys that would bypass the password gate or steal a session."""
+    if not isinstance(data, dict):
+        return {}
+    return {key: value for key, value in data.items() if not sensitive_setting(key)}
 
 
 # ── Session management ────────────────────────────────────────────────────────
@@ -153,7 +204,7 @@ def require_auth(request: Request):
     """Returns redirect or 401 JSON if not authenticated, else None."""
     from fastapi.responses import JSONResponse
     path = request.url.path
-    if path in PUBLIC_ROUTES or path.startswith("/static"):
+    if path in PUBLIC_ROUTES or path.startswith("/static") or path == "/api/fleet/health":
         return None
     if get_session_user(request) is None:
         # API calls get 401 JSON — so JS can detect and redirect
@@ -161,6 +212,15 @@ def require_auth(request: Request):
             return JSONResponse({"detail": "Session expired"}, status_code=401)
         safe_next = path if path.startswith("/") and not path.startswith("//") else "/"
         return RedirectResponse(url=f"/login?next={safe_next}", status_code=302)
+    if password_change_required() and path not in SETUP_ROUTES:
+        if path.startswith("/api/"):
+            return JSONResponse(
+                {"detail": "Change the factory password before using the firewall."},
+                status_code=403,
+            )
+        return RedirectResponse(url="/account/password", status_code=302)
+    if path == "/account/password" and not password_change_required():
+        return RedirectResponse(url="/settings", status_code=302)
     return None
 
 

@@ -1,8 +1,12 @@
 {
-  "version": "1.0.39",
-  "date": "2026-11-22",
+  "version": "1.0.41",
+  "date": "2026-11-23",
   "product": "FGUARD",
   "changelog": [
-    "Licenses are signed with a private key that stays off the firewall. A license made before this version no longer counts."
+    "The factory admin password must be replaced before the rest of the UI opens. An existing password is left as it is.",
+    "New images no longer ship a published root password. A machine that is already installed keeps its root password.",
+    "HA sync accepts only the SSH host key you saved, and rejects the old VRRP password.",
+    "Traffic Security is included and stays off: Suricata on LAN to WAN, URL categories, download antivirus, and HTTPS inspection.",
+    "Measured throughput, HA session sync when conntrackd is installed, and a read-only view of other firewalls."
   ]
 }

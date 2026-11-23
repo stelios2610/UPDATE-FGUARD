@@ -2,7 +2,7 @@
 
 **FGUARD** is a professional-grade network security gateway with a full web-based management interface. Built on Linux, it provides enterprise firewall features for small and medium businesses, branch offices, and home labs.
 
-> Current version: **v1.0.12**
+> Current version: **v1.0.41**
 
 ---
 
@@ -22,20 +22,20 @@
 
 ### Security
 - **GeoIP Blocking** — block traffic by country using ipset
-- **Web Filter** — DNS-based content filtering with DoH and QUIC blocking
-- **IPS** — Intrusion Prevention System
-- **Application Control** — per-application policy enforcement
-- **DLP** — Data Loss Prevention
+- **Web Filter** — DNS blocking for custom domains and small built-in category lists, plus DoH and QUIC blocking. It does not decrypt HTTPS.
+- **Traffic Security** — optional Suricata IPS on LAN-to-WAN client traffic, updating URL categories, ClamAV on files Suricata stores, and HTTPS inspection. All of these stay off until an administrator enables them. HTTPS inspection also requires an explicit confirmation because clients must trust the firewall CA. A stopped IPS fails open. These feeds are not FortiGuard and this is not a certified throughput rating.
+- **IPS** — host and half-open connection heuristics (port scan, floods, brute force), separate from the optional Suricata path.
+- **Application Control** — block applications by port, address, and TLS server name
+- **DLP, file type checks, spam, and ClamAV** — on-demand scans of content you submit. The download antivirus on Traffic Security is the path that scans files extracted from client traffic.
 - **Reputation filtering** — block known malicious IPs
-- **Spam filter**
-- **ClamAV** Gateway Antivirus (optional)
 
 ### Management
 - Web UI accessible via HTTPS (nginx reverse proxy)
 - Dashboard with real-time traffic stats (72-hour rolling window)
 - Network discovery
 - Certificate management (PKI)
-- High Availability (HA) manager
+- High Availability (HA) manager with optional connection sync when conntrackd is installed
+- Read-only health view of other FGUARD nodes. It does not push policy.
 - Logs viewer
 - **OTA Updates** — pull and apply updates from the UPDATE-FGUARD repository
 - License system (HMAC-SHA256, MAC-bound, lifetime or timed)
@@ -71,11 +71,15 @@ Internet (WAN)
 
 ## Installation
 
-On a fresh Ubuntu 24.04 server:
+On a fresh Ubuntu 24.04 server, install from a checkout you have reviewed:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/stelios2610/test-fguard/main/install.sh | sudo bash
+git clone https://github.com/stelios2610/test-fguard.git
+cd test-fguard
+sudo bash install.sh
 ```
+
+The first web sign-in must set a new administrator password. Until that happens the rest of the UI stays closed. Image builds write a one-time console password beside the ISO and expire it at first login.
 
 The installer will:
 1. Install all dependencies (Python 3, nginx, dnsmasq, OpenVPN, WireGuard, strongSwan, iptables-persistent, etc.)
@@ -90,7 +94,7 @@ After installation, access the web UI at:
 ```
 https://<server-ip>:8080
 ```
-Default credentials: `admin / admin`
+The first sign-in uses the factory account `admin` / `admin`. The UI then requires a different password before any other page opens.
 
 ---
 
@@ -132,7 +136,7 @@ Default credentials: `admin / admin`
 Each installation requires a license file at `/etc/fguard/license.key`.
 
 - Licenses are **MAC-address bound** (tied to the NIC of the server)
-- Signed with HMAC-SHA256
+- Signed with Ed25519. The private key stays off the firewall.
 - Durations: 6 months, 12 months, 24 months, or **Lifetime**
 - Features gated by license: Web Filter, Application Control, GeoIP Blocking, OTA Updates
 - Features always available (no license required): Firewall rules, VPN, Logging, Dashboard
@@ -141,14 +145,14 @@ Each installation requires a license file at `/etc/fguard/license.key`.
 
 ## OTA Update System
 
-FGUARD supports over-the-air updates from the [UPDATE-FGUARD](https://github.com/stelios2610/UPDATE-FGUARD) repository.
+FGUARD installs an update only when `version.json` is signed by the license private key and the downloaded archive matches the sha256 inside that signature. The private key stays on the machine that publishes updates (`~/.fguard/license-private.pem`).
 
-1. Go to **System → Updates** in the web UI
-2. Click **Check Now** — the system compares `version.json` with the upstream release
-3. If a newer version is available, click **Download** then **Apply**
-4. The server restarts automatically after applying the update
+1. Build the update zip. It must contain one top-level directory.
+2. Sign it: `python sign_update.py --zip dist/fguard.zip --url https://example.com/fguard.zip --version-file version.json --out-dir publish/`
+3. Publish `publish/version.json` and `publish/version.json.sig` where the appliance already looks (`UPDATE-FGUARD` raw `main`), and publish the zip at the https URL you signed.
+4. In the web UI, open **System → Updates**, then **Check Now**, **Download**, and **Apply**.
 
-Updates never overwrite: `firewall.db`, `pki/`, `vpn-configs/`, `version.json`.
+An unsigned manifest is refused. Updates never overwrite: `firewall.db`, `pki/`, `vpn-configs/`, `version.json` (the installed version is taken from the signed manifest).
 
 ---
 
@@ -167,7 +171,7 @@ Updates never overwrite: `firewall.db`, `pki/`, `vpn-configs/`, `version.json`.
 - The web UI is served over HTTPS with a self-signed certificate — accept the browser warning on first access
 - SSH from WAN is blocked by default (iptables INPUT DROP on WAN interface)
 - All firewall rules persist across reboots via `netfilter-persistent`
-- The default admin password should be changed immediately after first login
+- The factory admin password cannot be kept. The UI requires a new one before any other page opens.
 
 ---
 
