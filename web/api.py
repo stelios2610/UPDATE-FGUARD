@@ -1433,6 +1433,95 @@ async def api_traffic_tls(request: Request):
     return {"status": "ok" if ok else "error", "message": msg}
 
 
+@app.post("/api/traffic/signatures")
+async def api_traffic_signatures(request: Request):
+    _require_license("Threat signatures")
+    from core import traffic_security
+    data = await request.json()
+    if not data.get("enabled"):
+        database.set_setting("traffic_signatures_enabled", "0")
+        return {"status": "ok", "message": "Threat signatures off"}
+    try:
+        count = traffic_security.download_signatures()
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
+    database.set_setting("traffic_signatures_enabled", "1")
+    if database.get_setting("traffic_ips_enabled", "0") == "1":
+        wan, lans, ifaces = _traffic_planes()
+        traffic_security.apply_ips(True, [], ifaces, wan, lans)
+    return {"status": "ok", "message": "Threat signatures installed (%s lines)" % count}
+
+
+@app.post("/api/traffic/appid")
+async def api_traffic_appid(request: Request):
+    _require_license("Application identification")
+    from core.commercial import render_appid_rules
+    from core import traffic_security
+    data = await request.json()
+    enabled = bool(data.get("enabled"))
+    if enabled:
+        os.makedirs(os.path.dirname(traffic_security.APPID_RULES), exist_ok=True)
+        with open(traffic_security.APPID_RULES, "w", encoding="utf-8") as handle:
+            handle.write(render_appid_rules())
+    database.set_setting("traffic_appid_enabled", "1" if enabled else "0")
+    if database.get_setting("traffic_ips_enabled", "0") == "1":
+        wan, lans, ifaces = _traffic_planes()
+        traffic_security.apply_ips(True, [], ifaces, wan, lans)
+    return {"status": "ok", "message": "Application identification %s" % ("on" if enabled else "off")}
+
+
+@app.post("/api/traffic/https-categories")
+async def api_traffic_https_categories(request: Request):
+    _require_license("HTTPS categories")
+    from core.commercial import render_https_category_rules
+    from core import traffic_security
+    data = await request.json()
+    if not data.get("enabled"):
+        database.set_setting("traffic_https_categories_enabled", "0")
+        return {"status": "ok", "message": "HTTPS categories off"}
+    if database.get_setting("tls_inspect_enabled", "0") != "1":
+        return {"status": "error", "message": "Enable HTTPS inspection first"}
+    if not os.path.isfile(traffic_security.CATEGORY_DOMAINS):
+        return {"status": "error", "message": "Download URL categories first"}
+    with open(traffic_security.CATEGORY_DOMAINS, "r", encoding="utf-8") as handle:
+        domains = [line.strip() for line in handle if line.strip()]
+    os.makedirs(os.path.dirname(traffic_security.HTTPS_CATEGORY_RULES), exist_ok=True)
+    with open(traffic_security.HTTPS_CATEGORY_RULES, "w", encoding="utf-8") as handle:
+        handle.write(render_https_category_rules(domains))
+    database.set_setting("traffic_https_categories_enabled", "1")
+    if database.get_setting("traffic_ips_enabled", "0") == "1":
+        wan, lans, ifaces = _traffic_planes()
+        traffic_security.apply_ips(True, [], ifaces, wan, lans)
+    return {"status": "ok", "message": "HTTPS categories on"}
+
+
+@app.post("/api/traffic/av-decrypt")
+async def api_traffic_av_decrypt(request: Request):
+    _require_license("Decrypted antivirus")
+    from core import traffic_security
+    data = await request.json()
+    enabled = "1" if data.get("enabled") else "0"
+    if enabled == "1":
+        ok, err = traffic_security.ensure_package("clamscan", ["clamav", "clamav-freshclam"])
+        if not ok:
+            return {"status": "error", "message": err}
+        if database.get_setting("tls_inspect_enabled", "0") != "1":
+            return {"status": "error", "message": "Enable HTTPS inspection first"}
+    database.set_setting("traffic_av_decrypt_enabled", enabled)
+    traffic_security.start_eve_reader()
+    return {"status": "ok", "message": "Antivirus on decrypted HTTPS %s" % ("on" if enabled == "1" else "off")}
+
+
+@app.get("/api/traffic/ca")
+async def api_traffic_ca():
+    from fastapi.responses import FileResponse
+    from core.traffic_security import TLS_DIR
+    path = os.path.join(TLS_DIR, "ca.crt")
+    if not os.path.isfile(path):
+        raise HTTPException(404, "The CA is created when HTTPS inspection is enabled")
+    return FileResponse(path, filename="fguard-ca.crt", media_type="application/x-x509-ca-cert")
+
+
 @app.post("/api/traffic/measure")
 async def api_traffic_measure():
     from core import traffic_security
@@ -1502,6 +1591,49 @@ async def api_fleet_health(request: Request):
         raise HTTPException(401, "Fleet token rejected")
     state = traffic_security.status()
     return {"version": APP_VERSION, "ips": state["ips_enabled"], "suricata": state["suricata_active"]}
+
+
+def _fleet_guard(request: Request):
+    from core.fleet import token_matches
+    expected = database.get_setting("fleet_token", "") or ""
+    presented = request.headers.get("x-fguard-fleet", "")
+    if not token_matches(presented, expected):
+        raise HTTPException(401, "Fleet token rejected")
+
+
+@app.post("/api/fleet/policy")
+async def api_fleet_policy(request: Request):
+    from core.app_control import PREDEFINED_APPS
+    from core.commercial import filter_policy
+    _fleet_guard(request)
+    try:
+        cleaned = filter_policy(await request.json(), list(PREDEFINED_APPS))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    refused = cleaned.pop("tls_refused", None)
+    for key, value in cleaned.items():
+        if key == "apps":
+            for name, flag in value.items():
+                database.set_setting("appblock_%s" % name, flag)
+        else:
+            database.set_setting(key, value)
+    return {"status": "ok", "tls_refused": refused == "1"}
+
+
+@app.post("/api/fleet/push")
+async def api_fleet_push():
+    from core.app_control import PREDEFINED_APPS
+    from core.commercial import policy_snapshot
+    from core.fleet import push_policy
+    document = policy_snapshot(database.get_setting, list(PREDEFINED_APPS))
+    results = []
+    for node in database.get_fleet_nodes():
+        try:
+            reply = push_policy(node["base_url"], node["token"], document)
+            results.append({"id": node["id"], "name": node["name"], "ok": True, "reply": reply})
+        except Exception as exc:
+            results.append({"id": node["id"], "name": node["name"], "ok": False, "error": str(exc)})
+    return {"nodes": results}
 
 
 # ══════════════════════════════════════════════════════════════════════════════

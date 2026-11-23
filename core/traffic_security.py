@@ -22,6 +22,12 @@ APP_RULES = os.path.join(RULES_DIR, "fguard-apps.rules")
 CATEGORY_DNS = "/etc/dnsmasq.d/fguard-categories.conf"
 FILESTORE = "/var/lib/suricata/fguard-files"
 TLS_DIR = "/etc/fguard/tls-inspect"
+TLS_CONTENT = "/var/log/fguard-tls-content"
+SIGNATURE_URL = "https://rules.emergingthreats.net/open/suricata/emerging.rules.tar.gz"
+SIGNATURE_RULES = os.path.join(RULES_DIR, "fguard-signatures.rules")
+APPID_RULES = os.path.join(RULES_DIR, "fguard-appid.rules")
+HTTPS_CATEGORY_RULES = os.path.join(RULES_DIR, "fguard-https-categories.rules")
+CATEGORY_DOMAINS = os.path.join(RULES_DIR, "category-domains.txt")
 MAX_DOMAINS = 20000
 MAX_FEED_BYTES = 5 * 1024 * 1024
 
@@ -35,10 +41,26 @@ CATEGORY_FEEDS = {
 
 TLS_BYPASS = (
     "windowsupdate.com",
+    "microsoft.com",
+    "office.com",
+    "live.com",
     "apple.com",
     "icloud.com",
+    "mzstatic.com",
+    "google.com",
+    "gstatic.com",
+    "googleapis.com",
     "digicert.com",
     "letsencrypt.org",
+    "sectigo.com",
+    "paypal.com",
+    "stripe.com",
+    "nbg.gr",
+    "alpha.gr",
+    "eurobank.gr",
+    "piraeusbank.gr",
+    "ubuntu.com",
+    "mozilla.org",
 )
 
 _DOMAIN = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$")
@@ -52,7 +74,7 @@ def home_net(cidrs):
     return "[" + ",".join(cleaned) + "]"
 
 
-def render_suricata_yaml(cidrs, interfaces, file_store=False):
+def render_suricata_yaml(cidrs, interfaces, file_store=False, rule_files=None):
     ifaces = [name for name in (interfaces or []) if name]
     if not ifaces:
         ifaces = ["eth1"]
@@ -78,8 +100,10 @@ def render_suricata_yaml(cidrs, interfaces, file_store=False):
         "    EXTERNAL_NET: \"!$HOME_NET\"\n"
         "af-packet:\n%s\n"
         "nfq:\n  mode: accept\n  fail-open: yes\n"
+        "classification-file: /etc/suricata/classification.config\n"
+        "reference-config-file: /etc/suricata/reference.config\n"
         "default-rule-path: %s\n"
-        "rule-files:\n  - fguard-apps.rules\n"
+        "rule-files:\n%s"
         "outputs:\n"
         "  - eve-log:\n"
         "      enabled: yes\n"
@@ -87,7 +111,14 @@ def render_suricata_yaml(cidrs, interfaces, file_store=False):
         "      filename: %s\n"
         "      types:\n        - alert\n        - flow\n        - fileinfo\n"
         "%s"
-        % (home_net(cidrs), "\n".join(af), RULES_DIR, EVE_PATH, files)
+        % (
+            home_net(cidrs),
+            "\n".join(af),
+            RULES_DIR,
+            "".join("  - %s\n" % name for name in (rule_files or ["fguard-apps.rules"])),
+            EVE_PATH,
+            files,
+        )
     )
 
 
@@ -279,14 +310,17 @@ def tls_plan(enabled, confirmed):
 
 
 def sslsplit_command(plan):
-    return [
+    command = [
         "sslsplit", "-D",
         "-k", plan["ca_key"],
         "-c", plan["ca_cert"],
         "-P",
         "-l", "/var/log/fguard-tls.log",
-        "ssl", "0.0.0.0", str(plan["listen_port"]),
     ]
+    if plan.get("content_log"):
+        command += ["-S", plan["content_log"]]
+    command += ["ssl", "0.0.0.0", str(plan["listen_port"])]
+    return command
 
 
 def record_eve_line(line):
@@ -308,6 +342,12 @@ def record_eve_line(line):
                 )
                 return True
         return False
+    if event["kind"] == "alert" and str(event.get("signature") or "").startswith("FGUARD app "):
+        database.add_log(
+            "APP", src_ip=event["src_ip"], dst_ip=event["dst_ip"],
+            rule_name=event["signature"][:180], details="Application identified",
+        )
+        return True
     if event["kind"] != "alert":
         return False
     database.add_log(
@@ -366,6 +406,20 @@ def ensure_package(binary, packages):
     return True, ""
 
 
+def active_rule_files():
+    from core.commercial import rule_file_list
+    from db import database
+    names = rule_file_list(
+        signatures=database.get_setting("traffic_signatures_enabled", "0") == "1",
+        appid=database.get_setting("traffic_appid_enabled", "0") == "1",
+        https_categories=database.get_setting("traffic_https_categories_enabled", "0") == "1",
+    )
+    return [
+        name for name in names
+        if name == "fguard-apps.rules" or os.path.isfile(os.path.join(RULES_DIR, name))
+    ]
+
+
 def apply_ips(enabled, cidrs, interfaces, wan_iface, lan_ifaces):
     """Install or remove the fail-open Suricata path. Traffic continues if Suricata is down."""
     if not IS_LINUX or not is_root():
@@ -386,7 +440,9 @@ def apply_ips(enabled, cidrs, interfaces, wan_iface, lan_ifaces):
     except Exception:
         store_files = False
     with open(SURICATA_YAML, "w", encoding="utf-8") as handle:
-        handle.write(render_suricata_yaml(cidrs, interfaces, file_store=store_files))
+        handle.write(render_suricata_yaml(
+            cidrs, interfaces, file_store=store_files, rule_files=active_rule_files(),
+        ))
     if not os.path.isfile(APP_RULES):
         with open(APP_RULES, "w", encoding="utf-8") as handle:
             handle.write(render_app_rules([]))
@@ -426,6 +482,12 @@ def apply_categories(domains):
     os.makedirs(os.path.dirname(CATEGORY_DNS), exist_ok=True)
     with open(CATEGORY_DNS, "w", encoding="utf-8") as handle:
         handle.write(dnsmasq_lines(domains))
+    try:
+        os.makedirs(RULES_DIR, exist_ok=True)
+        with open(CATEGORY_DOMAINS, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(domains) + "\n")
+    except OSError:
+        pass
     ok, _, err = run(["systemctl", "restart", "dnsmasq"], timeout=20)
     if not ok:
         return False, err or "dnsmasq did not restart"
@@ -477,6 +539,12 @@ def _eve_loop():
                     offset = handle.tell()
         except Exception:
             pass
+        try:
+            from db import database
+            if database.get_setting("traffic_av_decrypt_enabled", "0") == "1":
+                _scan_decrypted_files()
+        except Exception:
+            pass
         time.sleep(2)
 
 
@@ -501,6 +569,10 @@ def enable_tls(confirmed, lan_iface):
     ok, err = ensure_package("sslsplit", "sslsplit")
     if not ok:
         return False, err
+    from db import database
+    if database.get_setting("traffic_av_decrypt_enabled", "0") == "1":
+        os.makedirs(TLS_CONTENT, exist_ok=True)
+        plan["content_log"] = TLS_CONTENT
     os.makedirs(TLS_DIR, exist_ok=True)
     if not os.path.isfile(plan["ca_cert"]) or not os.path.isfile(plan["ca_key"]):
         ok, _, err = run([
@@ -528,6 +600,11 @@ def enable_tls(confirmed, lan_iface):
     check, _, _ = run(["iptables", "-t", "nat", "-C", "PREROUTING"] + redirect)
     if not check:
         run(["iptables", "-t", "nat", "-A", "PREROUTING"] + redirect)
+    from core.commercial import quic_rules
+    for rule in quic_rules([lan_iface]):
+        check, _, _ = run(["iptables", "-C", "FORWARD"] + rule)
+        if not check:
+            run(["iptables", "-I", "FORWARD", "1"] + rule)
     command = " ".join(sslsplit_command(plan))
     unit = (
         "[Unit]\nDescription=FGUARD HTTPS inspection\n\n"
@@ -552,8 +629,52 @@ def disable_tls():
                     break
                 chain, args = rules[0]
                 run(["iptables", "-t", "nat", "-D", chain] + args)
+        for _ in range(32):
+            rules = _comment_rules("filter", "fguard_quic")
+            if not rules:
+                break
+            chain, args = rules[0]
+            run(["iptables", "-D", chain] + args)
         run(["systemctl", "stop", "fguard-tls"])
     return True, "HTTPS inspection stopped"
+
+
+def _scan_decrypted_files():
+    from core import gateway_av
+    from db import database
+    folder = os.path.realpath(TLS_CONTENT)
+    if not os.path.isdir(folder):
+        return
+    for name in os.listdir(folder)[:40]:
+        path = os.path.realpath(os.path.join(folder, name))
+        if not path.startswith(folder + os.sep) or not os.path.isfile(path):
+            continue
+        if os.path.getsize(path) > 20 * 1024 * 1024:
+            continue
+        clean, threat = gateway_av.scan_file(path)
+        if not clean:
+            database.add_log(
+                "BLOCK", rule_name="ClamAV",
+                details="Decrypted download blocked: %s" % (threat or name),
+            )
+
+
+def install_signatures(blob):
+    from core.commercial import extract_rules_from_tar
+    text = extract_rules_from_tar(blob)
+    os.makedirs(RULES_DIR, exist_ok=True)
+    with open(SIGNATURE_RULES, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    return text.count("\n")
+
+
+def download_signatures():
+    request = urllib.request.Request(SIGNATURE_URL, headers={"User-Agent": "FGUARD"})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        blob = response.read(40 * 1024 * 1024 + 1)
+    if len(blob) > 40 * 1024 * 1024:
+        blob = blob[:40 * 1024 * 1024]
+    return install_signatures(blob)
 
 
 def update_category_feeds():
@@ -597,5 +718,9 @@ def status():
         "categories_enabled": database.get_setting("traffic_categories_enabled", "0") == "1",
         "av_enabled": database.get_setting("traffic_av_enabled", "0") == "1",
         "tls_enabled": database.get_setting("tls_inspect_enabled", "0") == "1",
+        "signatures_enabled": database.get_setting("traffic_signatures_enabled", "0") == "1",
+        "appid_enabled": database.get_setting("traffic_appid_enabled", "0") == "1",
+        "https_categories_enabled": database.get_setting("traffic_https_categories_enabled", "0") == "1",
+        "av_decrypt_enabled": database.get_setting("traffic_av_decrypt_enabled", "0") == "1",
         "updated": datetime.now().isoformat(),
     }

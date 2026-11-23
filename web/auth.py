@@ -204,7 +204,7 @@ def require_auth(request: Request):
     """Returns redirect or 401 JSON if not authenticated, else None."""
     from fastapi.responses import JSONResponse
     path = request.url.path
-    if path in PUBLIC_ROUTES or path.startswith("/static") or path == "/api/fleet/health":
+    if path in PUBLIC_ROUTES or path.startswith("/static") or path in ("/api/fleet/health", "/api/fleet/policy"):
         return None
     if get_session_user(request) is None:
         # API calls get 401 JSON — so JS can detect and redirect

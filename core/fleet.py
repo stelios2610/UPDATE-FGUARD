@@ -1,4 +1,4 @@
-"""Read-only view of other FGUARD nodes. This does not push policy."""
+"""Health and policy for other FGUARD nodes. Policy push sends traffic switches only."""
 import hmac
 import urllib.parse
 import urllib.request
@@ -26,6 +26,27 @@ def token_matches(presented, expected):
 
 def health_url(base_url):
     return normalize_base_url(base_url) + "/api/fleet/health"
+
+
+def policy_url(base_url):
+    return normalize_base_url(base_url) + "/api/fleet/policy"
+
+
+def push_policy(base_url, token, document, timeout=20):
+    import json
+    payload = json.dumps(document).encode()
+    request = urllib.request.Request(
+        policy_url(base_url),
+        data=payload,
+        headers={
+            "X-FGUARD-Fleet": token,
+            "User-Agent": "FGUARD",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8", errors="replace"))
 
 
 def fetch_health(base_url, token, timeout=3):

@@ -36,11 +36,50 @@
     </div>
     <div>
       <div class="card-title">HTTPS inspection</div>
-      <p class="text-muted">Decrypts client HTTPS. Sites and apps break until every device trusts the firewall CA. Leave this off unless you accept that.</p>
+      <p class="text-muted">Decrypts client HTTPS. Bypasses Windows, Apple, Google, banks, and certificate sites, and blocks QUIC so the browser uses TLS. Clients still need the firewall CA. <a href="/api/traffic/ca">Download CA</a></p>
       <label style="display:block;margin:8px 0"><input type="checkbox" id="tls-confirm"> I confirm clients will install the firewall CA</label>
       <button class="btn btn-danger" onclick="setTls(true)">Download and enable</button>
       <button class="btn btn-secondary" onclick="setTls(false)">Disable</button>
       <div class="text-muted" style="margin-top:8px">Status: {{ 'on' if traffic.tls_enabled else 'off' }}</div>
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:16px">
+  <div class="card-header">
+    <div>
+      <div class="card-title">Deeper inspection</div>
+      <div class="card-sub">These stay off until you enable them. They are not a FortiGuard feed.</div>
+    </div>
+  </div>
+  <div class="grid grid-2">
+    <div>
+      <div class="card-title">Threat signatures</div>
+      <p class="text-muted">Downloads the Emerging Threats open rules and loads them into Suricata. Enable Signature IPS as well.</p>
+      <button class="btn btn-success" onclick="setFlag('/api/traffic/signatures', true)">Download and enable</button>
+      <button class="btn btn-secondary" onclick="setFlag('/api/traffic/signatures', false)">Disable</button>
+      <div class="text-muted" style="margin-top:8px">Status: {{ 'on' if traffic.signatures_enabled else 'off' }}</div>
+    </div>
+    <div>
+      <div class="card-title">Application identification</div>
+      <p class="text-muted">Names applications on LAN to WAN traffic. This records them. It does not block them.</p>
+      <button class="btn btn-success" onclick="setFlag('/api/traffic/appid', true)">Enable</button>
+      <button class="btn btn-secondary" onclick="setFlag('/api/traffic/appid', false)">Disable</button>
+      <div class="text-muted" style="margin-top:8px">Status: {{ 'on' if traffic.appid_enabled else 'off' }}</div>
+    </div>
+    <div>
+      <div class="card-title">HTTPS categories</div>
+      <p class="text-muted">Uses the downloaded category domains on the TLS server name. Needs URL categories and HTTPS inspection.</p>
+      <button class="btn btn-success" onclick="setFlag('/api/traffic/https-categories', true)">Enable</button>
+      <button class="btn btn-secondary" onclick="setFlag('/api/traffic/https-categories', false)">Disable</button>
+      <div class="text-muted" style="margin-top:8px">Status: {{ 'on' if traffic.https_categories_enabled else 'off' }}</div>
+    </div>
+    <div>
+      <div class="card-title">Antivirus on decrypted HTTPS</div>
+      <p class="text-muted">ClamAV scans files from decrypted HTTPS. Needs HTTPS inspection.</p>
+      <button class="btn btn-success" onclick="setFlag('/api/traffic/av-decrypt', true)">Enable</button>
+      <button class="btn btn-secondary" onclick="setFlag('/api/traffic/av-decrypt', false)">Disable</button>
+      <div class="text-muted" style="margin-top:8px">Status: {{ 'on' if traffic.av_decrypt_enabled else 'off' }}</div>
     </div>
   </div>
 </div>
@@ -83,6 +122,7 @@
       <div class="card-sub">Read-only health. This page does not push policy to other nodes.</div>
     </div>
     <button class="btn btn-secondary btn-sm" onclick="refreshFleet()">Refresh health</button>
+    <button class="btn btn-success btn-sm" onclick="pushPolicy()">Push policy</button>
   </div>
   <div class="text-muted" style="margin-bottom:8px">This firewall's token: <span id="local-token" class="font-mono">loading</span></div>
   <div class="btn-group" style="margin-bottom:12px">
@@ -109,6 +149,20 @@
 </div>
 
 <script>
+async function setFlag(url, enabled) {
+  try {
+    const data = await POST(url, {enabled});
+    toast(data.message || 'Saved', data.status === 'ok' ? 'success' : 'error');
+    if (data.status === 'ok') setTimeout(() => location.reload(), 600);
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function pushPolicy() {
+  try {
+    const data = await POST('/api/fleet/push', {});
+    const lines = (data.nodes || []).map(node => node.name + ': ' + (node.ok ? 'policy sent' : node.error));
+    document.getElementById('fleet-health').textContent = lines.join('\n') || 'No nodes.';
+  } catch (err) { toast(err.message, 'error'); }
+}
 async function setIps(enabled) {
   try {
     if (enabled) toast('Downloading Suricata, then enabling it', 'info');
