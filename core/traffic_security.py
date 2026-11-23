@@ -335,6 +335,37 @@ def _drop_nfqueue_rules():
             break
 
 
+def package_install_argv(packages):
+    """apt-get command that downloads a missing program. Names stay package names."""
+    if isinstance(packages, str):
+        packages = [packages]
+    cleaned = []
+    for package in packages:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9.+-]*", str(package or "")):
+            raise ValueError("package name is not allowed")
+        cleaned.append(str(package))
+    if not cleaned:
+        raise ValueError("package name is not allowed")
+    return ["apt-get", "install", "-y"] + cleaned
+
+
+def ensure_package(binary, packages):
+    """Download and install a program when the firewall does not have it yet."""
+    ok, _, _ = run(["which", binary])
+    if ok:
+        return True, ""
+    run(["apt-get", "update"], timeout=120)
+    ok, _, err = run(package_install_argv(packages), timeout=240)
+    if not ok:
+        return False, err or "Could not install %s" % packages
+    if binary == "suricata":
+        run(["systemctl", "disable", "--now", "suricata"], timeout=30)
+    ok, _, _ = run(["which", binary])
+    if not ok:
+        return False, "%s was installed but %s is still missing" % (packages, binary)
+    return True, ""
+
+
 def apply_ips(enabled, cidrs, interfaces, wan_iface, lan_ifaces):
     """Install or remove the fail-open Suricata path. Traffic continues if Suricata is down."""
     if not IS_LINUX or not is_root():
@@ -343,9 +374,9 @@ def apply_ips(enabled, cidrs, interfaces, wan_iface, lan_ifaces):
         _drop_nfqueue_rules()
         run(["systemctl", "stop", "fguard-suricata"])
         return True, "Traffic IPS stopped"
-    ok, _, err = run(["which", "suricata"])
+    ok, err = ensure_package("suricata", "suricata")
     if not ok:
-        return False, "suricata is not installed"
+        return False, err
     os.makedirs(RULES_DIR, exist_ok=True)
     os.makedirs(os.path.dirname(EVE_PATH), exist_ok=True)
     store_files = False
@@ -467,9 +498,9 @@ def enable_tls(confirmed, lan_iface):
         return False, "HTTPS inspection requires Linux root"
     if not lan_iface:
         return False, "Set the LAN interface first"
-    ok, _, _ = run(["which", "sslsplit"])
+    ok, err = ensure_package("sslsplit", "sslsplit")
     if not ok:
-        return False, "sslsplit is not installed"
+        return False, err
     os.makedirs(TLS_DIR, exist_ok=True)
     if not os.path.isfile(plan["ca_cert"]) or not os.path.isfile(plan["ca_key"]):
         ok, _, err = run([

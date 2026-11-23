@@ -16,7 +16,7 @@
     <div>
       <div class="card-title">Signature IPS</div>
       <p class="text-muted">Suricata inspects LAN to WAN traffic. Rules are the application names you already block, plus the block list below.</p>
-      <button class="btn btn-success" onclick="setIps(true)">Enable</button>
+      <button class="btn btn-success" onclick="setIps(true)">Download and enable</button>
       <button class="btn btn-secondary" onclick="setIps(false)">Disable</button>
       <div class="text-muted" style="margin-top:8px">Status: {{ 'on' if traffic.ips_enabled else 'off' }} · process {{ 'running' if traffic.suricata_active else 'stopped' }}</div>
     </div>
@@ -30,7 +30,7 @@
     <div>
       <div class="card-title">Download antivirus</div>
       <p class="text-muted">ClamAV scans files Suricata stores from client downloads. It does not scan traffic that stays encrypted.</p>
-      <button class="btn btn-success" onclick="setAv(true)">Enable</button>
+      <button class="btn btn-success" onclick="setAv(true)">Download and enable</button>
       <button class="btn btn-secondary" onclick="setAv(false)">Disable</button>
       <div class="text-muted" style="margin-top:8px">Status: {{ 'on' if traffic.av_enabled else 'off' }}</div>
     </div>
@@ -38,7 +38,7 @@
       <div class="card-title">HTTPS inspection</div>
       <p class="text-muted">Decrypts client HTTPS. Sites and apps break until every device trusts the firewall CA. Leave this off unless you accept that.</p>
       <label style="display:block;margin:8px 0"><input type="checkbox" id="tls-confirm"> I confirm clients will install the firewall CA</label>
-      <button class="btn btn-danger" onclick="setTls(true)">Enable inspection</button>
+      <button class="btn btn-danger" onclick="setTls(true)">Download and enable</button>
       <button class="btn btn-secondary" onclick="setTls(false)">Disable</button>
       <div class="text-muted" style="margin-top:8px">Status: {{ 'on' if traffic.tls_enabled else 'off' }}</div>
     </div>
@@ -111,6 +111,7 @@
 <script>
 async function setIps(enabled) {
   try {
+    if (enabled) toast('Downloading Suricata, then enabling it', 'info');
     const data = await POST('/api/traffic/ips', {enabled});
     toast(data.message || 'Saved', data.status === 'ok' ? 'success' : 'error');
     if (data.status === 'ok') setTimeout(() => location.reload(), 600);
@@ -125,13 +126,15 @@ async function setCategories(enabled) {
 }
 async function setAv(enabled) {
   try {
+    if (enabled) toast('Downloading ClamAV, then enabling it', 'info');
     const data = await POST('/api/traffic/av', {enabled});
-    toast(data.message || 'Saved', 'success');
-    setTimeout(() => location.reload(), 600);
+    toast(data.message || 'Saved', data.status === 'ok' ? 'success' : 'error');
+    if (data.status === 'ok') setTimeout(() => location.reload(), 600);
   } catch (err) { toast(err.message, 'error'); }
 }
 async function setTls(enabled) {
   try {
+    if (enabled) toast('Downloading sslsplit, then enabling inspection', 'info');
     const data = await POST('/api/traffic/tls', {enabled, confirm: document.getElementById('tls-confirm').checked});
     toast(data.message || 'Saved', data.status === 'ok' ? 'success' : 'error');
     if (data.status === 'ok') setTimeout(() => location.reload(), 600);

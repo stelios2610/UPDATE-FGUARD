@@ -1399,9 +1399,16 @@ async def api_traffic_av(request: Request):
     _require_license("Download antivirus")
     data = await request.json()
     enabled = "1" if data.get("enabled") else "0"
-    database.set_setting("traffic_av_enabled", enabled)
     from core import traffic_security
+    if enabled == "1":
+        ok, err = traffic_security.ensure_package("clamscan", ["clamav", "clamav-freshclam"])
+        if not ok:
+            return {"status": "error", "message": err}
+    database.set_setting("traffic_av_enabled", enabled)
     traffic_security.start_eve_reader()
+    if enabled == "1" and database.get_setting("traffic_ips_enabled", "0") == "1":
+        wan, lans, ifaces = _traffic_planes()
+        traffic_security.apply_ips(True, [], ifaces, wan, lans)
     return {"status": "ok", "message": "Download scanning %s" % ("on" if enabled == "1" else "off")}
 
 

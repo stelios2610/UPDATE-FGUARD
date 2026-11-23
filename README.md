@@ -2,7 +2,7 @@
 
 **FGUARD** is a professional-grade network security gateway with a full web-based management interface. Built on Linux, it provides enterprise firewall features for small and medium businesses, branch offices, and home labs.
 
-> Current version: **v1.0.41**
+> Current version: **v1.0.42**
 
 ---
 
