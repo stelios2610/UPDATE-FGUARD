@@ -2,7 +2,7 @@
 
 **FGUARD** is a professional-grade network security gateway with a full web-based management interface. Built on Linux, it provides enterprise firewall features for small and medium businesses, branch offices, and home labs.
 
-> Current version: **v1.0.43**
+> Current version: **v1.0.44**
 
 ---
 
@@ -25,6 +25,8 @@
 - **Web Filter** — DNS blocking for custom domains and small built-in category lists, plus DoH and QUIC blocking. It does not decrypt HTTPS.
 - **Traffic Security** — optional Suricata IPS on LAN-to-WAN client traffic, Emerging Threats open signatures, application identification, URL categories in DNS and on TLS names, ClamAV on extracted and decrypted files, and HTTPS inspection. All of these stay off until an administrator enables them. HTTPS inspection also requires an explicit confirmation, bypasses updates and banks, and blocks QUIC. A stopped IPS fails open. These feeds are not FortiGuard and this is not a certified throughput rating.
 - **Policy push** — send the traffic switches to other FGUARD nodes. It does not turn on HTTPS inspection remotely.
+- **Rule depth** — optional address and port groups, weekly schedules, VLAN-to-VLAN rules, and hit counters. Off until enabled.
+- **HA policy sync** — optional copy of rules, NAT, and groups to the backup. The backup keeps its role and password. Off until enabled.
 - **IPS** — host and half-open connection heuristics (port scan, floods, brute force), separate from the optional Suricata path.
 - **Application Control** — block applications by port, address, and TLS server name
 - **DLP, file type checks, spam, and ClamAV** — on-demand scans of content you submit. The download antivirus on Traffic Security is the path that scans files extracted from client traffic.

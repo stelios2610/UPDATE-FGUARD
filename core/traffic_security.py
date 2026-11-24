@@ -199,7 +199,7 @@ def parse_eve_line(line):
     return None
 
 
-def parse_domain_list(text):
+def parse_domain_list(text, limit=None):
     """Domains from a hosts file or a list of URLs."""
     found = []
     seen = set()
@@ -221,7 +221,7 @@ def parse_domain_list(text):
             continue
         seen.add(host)
         found.append(host)
-        if len(found) >= MAX_DOMAINS:
+        if len(found) >= (MAX_DOMAINS if limit is None else limit):
             break
     return found
 
@@ -342,7 +342,7 @@ def record_eve_line(line):
                 )
                 return True
         return False
-    if event["kind"] == "alert" and str(event.get("signature") or "").startswith("FGUARD app "):
+    if event["kind"] == "alert" and str(event.get("signature") or "").startswith(("FGUARD app ", "FGUARD proto ")):
         database.add_log(
             "APP", src_ip=event["src_ip"], dst_ip=event["dst_ip"],
             rule_name=event["signature"][:180], details="Application identified",
@@ -413,6 +413,7 @@ def active_rule_files():
         signatures=database.get_setting("traffic_signatures_enabled", "0") == "1",
         appid=database.get_setting("traffic_appid_enabled", "0") == "1",
         https_categories=database.get_setting("traffic_https_categories_enabled", "0") == "1",
+        protocols=database.get_setting("traffic_protoid_enabled", "0") == "1",
     )
     return [
         name for name in names
@@ -458,7 +459,12 @@ def apply_ips(enabled, cidrs, interfaces, wan_iface, lan_ifaces):
     ok, _, err = run(["systemctl", "restart", "fguard-suricata"], timeout=30)
     if not ok:
         return False, err or "suricata did not start"
-    for rule in nfqueue_rules(lan_ifaces, wan_iface):
+    from core.parity import custom_ifaces, custom_scope_enabled
+    if custom_scope_enabled():
+        queue_rules = nfqueue_rules(custom_ifaces(), "")
+    else:
+        queue_rules = nfqueue_rules(lan_ifaces, wan_iface)
+    for rule in queue_rules:
         check, _, _ = run(["iptables", "-C", "FORWARD"] + rule)
         if not check:
             run(["iptables", "-I", "FORWARD", "1"] + rule)
@@ -661,7 +667,12 @@ def _scan_decrypted_files():
 
 def install_signatures(blob):
     from core.commercial import extract_rules_from_tar
+    from core.parity import rewrite_signatures, signature_mode_enabled
     text = extract_rules_from_tar(blob)
+    if signature_mode_enabled():
+        from db import database
+        disabled = [row["sid"] for row in database.list_signature_overrides() if row["mode"] == "disable"]
+        text = rewrite_signatures(text, database.get_setting("traffic_sig_mode", ""), disabled)
     os.makedirs(RULES_DIR, exist_ok=True)
     with open(SIGNATURE_RULES, "w", encoding="utf-8") as handle:
         handle.write(text)
@@ -681,15 +692,145 @@ def update_category_feeds():
     domains = []
     errors = []
     seen = set()
+    from core.parity import feed_cap, lists_extended
+    extended = lists_extended()
+    cap = feed_cap(extended)
     for name, url in CATEGORY_FEEDS.items():
         try:
-            for domain in parse_domain_list(fetch_feed(url)):
+            for domain in parse_domain_list(fetch_feed(url), limit=cap):
                 if domain not in seen:
                     seen.add(domain)
                     domains.append(domain)
+                if extended and len(domains) >= cap:
+                    break
         except Exception as exc:
             errors.append("%s: %s" % (name, exc))
+        if extended and len(domains) >= cap:
+            break
     return domains, errors
+
+
+IP_FEEDS = (
+    ("Spamhaus DROP", "https://www.spamhaus.org/drop/drop.txt"),
+    ("Spamhaus EDROP", "https://www.spamhaus.org/drop/edrop.txt"),
+)
+PROTO_RULES = os.path.join(RULES_DIR, "fguard-proto.rules")
+
+
+def update_ip_feeds():
+    from core.parity import parse_ip_network_list
+    networks = []
+    seen = set()
+    errors = []
+    for name, url in IP_FEEDS:
+        try:
+            for network in parse_ip_network_list(fetch_feed(url)):
+                if network not in seen:
+                    seen.add(network)
+                    networks.append(network)
+        except Exception as exc:
+            errors.append("%s: %s" % (name, exc))
+    return networks, errors
+
+
+def apply_ip_blocklist(networks):
+    if not IS_LINUX or not is_root():
+        return False, "IP lists require Linux root"
+    from core.parity import ipset_restore_lines
+    os.makedirs("/etc/fguard", exist_ok=True)
+    path = "/etc/fguard/block-ips.ipset"
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(ipset_restore_lines(networks))
+    ok, _, err = run(["ipset", "restore", "-exist", "-file", path], timeout=60)
+    if not ok:
+        return False, err or "ipset restore failed"
+    rule = [
+        "-m", "set", "--match-set", "fguard_block_ips", "dst",
+        "-m", "comment", "--comment", "fguard_block_ips", "-j", "DROP",
+    ]
+    check, _, _ = run(["iptables", "-C", "FORWARD"] + rule)
+    if not check:
+        run(["iptables", "-I", "FORWARD", "1"] + rule)
+    return True, "%d networks installed" % len(networks)
+
+
+def remove_ip_blocklist():
+    if IS_LINUX and is_root():
+        for _ in range(8):
+            rules = _comment_rules("filter", "fguard_block_ips")
+            if not rules:
+                break
+            chain, args = rules[0]
+            run(["iptables", "-D", chain] + args)
+        run(["ipset", "destroy", "fguard_block_ips"])
+    return True, "IP block list removed"
+
+
+def write_proto_rules():
+    from core.parity import render_proto_rules
+    os.makedirs(RULES_DIR, exist_ok=True)
+    with open(PROTO_RULES, "w", encoding="utf-8") as handle:
+        handle.write(render_proto_rules())
+
+
+def record_samples():
+    from db import database
+    ok, rates = measure_interfaces(1)
+    if not ok or not isinstance(rates, dict):
+        return
+    for iface, row in rates.items():
+        if iface == "lo":
+            continue
+        database.add_traffic_sample(iface, row.get("rx_mbps") or 0, row.get("tx_mbps") or 0)
+
+
+def start_optional_jobs():
+    """Hourly signature and list refresh, and five-minute graphs. Both no-op while their switches are off."""
+    global _jobs_started
+    if _jobs_started:
+        return
+    _jobs_started = True
+    import threading
+    threading.Thread(target=_optional_loop, daemon=True).start()
+
+
+_jobs_started = False
+
+
+def _optional_loop():
+    tick = 0
+    while True:
+        time.sleep(300)
+        tick += 1
+        try:
+            from db import database
+            if database.get_setting("traffic_stats_enabled", "0") == "1":
+                record_samples()
+            if tick % 12 != 0:
+                continue
+            if (database.get_setting("traffic_sig_autoupdate", "0") == "1"
+                    and database.get_setting("traffic_signatures_enabled", "0") == "1"):
+                download_signatures()
+                if database.get_setting("traffic_ips_enabled", "0") == "1":
+                    wan = database.get_setting("wan_interface", "") or ""
+                    lan = database.get_setting("lan_interface", "") or ""
+                    lans = [item.strip() for item in lan.split(",") if item.strip()]
+                    apply_ips(True, [], lans + ([wan] if wan else []), wan, lans)
+            if (database.get_setting("traffic_lists_autoupdate", "0") == "1"
+                    and database.get_setting("traffic_categories_enabled", "0") == "1"):
+                domains, _errors = update_category_feeds()
+                if domains:
+                    apply_categories(domains)
+                    database.set_setting("traffic_lists_domains", str(len(domains)))
+                    database.set_setting("traffic_lists_updated", datetime.now().isoformat())
+            if (database.get_setting("traffic_lists_extended", "0") == "1"
+                    and database.get_setting("traffic_lists_autoupdate", "0") == "1"):
+                networks, _errors = update_ip_feeds()
+                if networks:
+                    apply_ip_blocklist(networks)
+                    database.set_setting("traffic_lists_ips", str(len(networks)))
+        except Exception:
+            pass
 
 
 def restore():
@@ -722,5 +863,18 @@ def status():
         "appid_enabled": database.get_setting("traffic_appid_enabled", "0") == "1",
         "https_categories_enabled": database.get_setting("traffic_https_categories_enabled", "0") == "1",
         "av_decrypt_enabled": database.get_setting("traffic_av_decrypt_enabled", "0") == "1",
+        "scope_enabled": database.get_setting("traffic_ips_scope_enabled", "0") == "1",
+        "ips_ifaces": database.get_setting("traffic_ips_ifaces", "") or "",
+        "sig_mode_enabled": database.get_setting("traffic_sig_mode_enabled", "0") == "1",
+        "sig_mode": database.get_setting("traffic_sig_mode", "drop") or "drop",
+        "sig_autoupdate": database.get_setting("traffic_sig_autoupdate", "0") == "1",
+        "lists_extended": database.get_setting("traffic_lists_extended", "0") == "1",
+        "lists_autoupdate": database.get_setting("traffic_lists_autoupdate", "0") == "1",
+        "lists_domains": database.get_setting("traffic_lists_domains", "0") or "0",
+        "lists_ips": database.get_setting("traffic_lists_ips", "0") or "0",
+        "lists_updated": database.get_setting("traffic_lists_updated", "") or "",
+        "stats_enabled": database.get_setting("traffic_stats_enabled", "0") == "1",
+        "protoid_enabled": database.get_setting("traffic_protoid_enabled", "0") == "1",
+        "groups_enabled": database.get_setting("rules_groups_enabled", "0") == "1",
         "updated": datetime.now().isoformat(),
     }

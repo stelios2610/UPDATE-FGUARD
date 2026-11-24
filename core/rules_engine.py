@@ -263,7 +263,28 @@ def _addrs_for(rule, chain):
 
 
 def _append_rule(rule):
-    """Install one enabled rule into the policy chains. Never a catch-all."""
+    """Install one enabled rule. Groups and schedules apply only when that switch is on."""
+    try:
+        from core.parity import expand_rule, groups_enabled, rule_active
+        if groups_enabled():
+            if not rule_active(rule):
+                return True, "Outside schedule"
+            concrete_rules = expand_rule(rule, database.alias_map())
+        else:
+            concrete_rules = [rule]
+    except ValueError as exc:
+        return False, str(exc)
+    installed = False
+    for concrete in concrete_rules:
+        ok, message, did = _append_one(concrete)
+        if not ok:
+            return False, message
+        installed = installed or did
+    return True, "OK" if installed else "Stored"
+
+
+def _append_one(rule):
+    """Install one concrete rule into the policy chains. Never a catch-all."""
     port = _port_to_iptables(_service_port(rule))
     action = "ACCEPT" if rule.get("action") == "ALLOW" else "DROP"
     proto = (rule.get("protocol") or "ANY").upper()
@@ -278,7 +299,15 @@ def _append_rule(rule):
     iface = (rule.get("interface") or "").strip()
     if iface in ("", "ANY", "*") and _wan_scoped(rule):
         iface = _detect_wan_iface()
-    for chain in _rule_chains(rule):
+    chains = _rule_chains(rule)
+    try:
+        from core.parity import clean_iface, groups_enabled
+        if groups_enabled() and clean_iface(rule.get("in_iface")) and clean_iface(rule.get("out_iface")):
+            if RULES_FWD not in chains:
+                chains = list(chains) + [RULES_FWD]
+    except ValueError as exc:
+        return False, str(exc), False
+    for chain in chains:
         src, dst = _addrs_for(rule, chain)
         if not port and not src and not dst and action == "DROP" and not _enforce_default_deny():
             continue
@@ -290,16 +319,25 @@ def _append_rule(rule):
                 args += ["-s", src]
             if dst:
                 args += ["-d", dst]
-            if iface and iface not in ("ANY", "*"):
+            if iface and iface not in ("ANY", "*") and chain != RULES_FWD:
                 args += ["-o" if chain == RULES_OUT else "-i", iface]
+            if chain == RULES_FWD:
+                from core.parity import groups_enabled
+                if groups_enabled():
+                    in_iface = (rule.get("in_iface") or "").strip()
+                    out_iface = (rule.get("out_iface") or "").strip()
+                    if in_iface and in_iface not in ("ANY", "*"):
+                        args += ["-i", in_iface]
+                    if out_iface and out_iface not in ("ANY", "*"):
+                        args += ["-o", out_iface]
             if port and proto_name in ("tcp", "udp"):
                 args += ["--dport", port]
             args += ["-m", "comment", "--comment", comment, "-j", action]
             ok, msg = _ipt(args)
             if not ok:
-                return False, msg
+                return False, msg, False
             installed = True
-    return True, "OK" if installed else "Stored"
+    return True, "OK" if installed else "Stored", installed
 
 
 def _install_deny_guards():

@@ -84,6 +84,54 @@
   </div>
 </div>
 
+<div class="card" style="margin-bottom:16px">
+  <div class="card-header">
+    <div>
+      <div class="card-title">Closer to pfSense</div>
+      <div class="card-sub">Off until you enable each one. Nothing here changes traffic on Apply by itself.</div>
+    </div>
+  </div>
+  <div class="grid grid-2">
+    <div>
+      <div class="card-title">Inspect chosen interfaces</div>
+      <p class="text-muted">Default stays LAN to WAN. Enable this to inspect the interfaces you name, including VLAN to VLAN.</p>
+      <input class="form-control" id="scope-ifaces" value="{{ traffic.ips_ifaces }}" placeholder="eth1, eth2">
+      <button class="btn btn-success" onclick="setScope(true)">Enable</button>
+      <button class="btn btn-secondary" onclick="setScope(false)">Disable</button>
+      <div class="text-muted" style="margin-top:8px">Status: {{ 'on' if traffic.scope_enabled else 'off' }}</div>
+    </div>
+    <div>
+      <div class="card-title">Signature mode</div>
+      <p class="text-muted">Alert only records. Drop blocks. A sid can be disabled. Auto-update runs only after you turn it on and signatures are already installed.</p>
+      <select class="form-control" id="sig-mode"><option value="drop">drop</option><option value="alert">alert</option></select>
+      <input class="form-control" id="sig-sid" placeholder="sid to disable">
+      <button class="btn btn-success" onclick="setSigMode(true)">Enable mode</button>
+      <button class="btn btn-secondary" onclick="setSigMode(false)">Disable mode</button>
+      <button class="btn btn-secondary" onclick="disableSid()">Disable sid</button>
+      <button class="btn btn-secondary" onclick="setSigAuto(true)">Auto-update</button>
+      <button class="btn btn-secondary" onclick="setSigAuto(false)">Stop auto-update</button>
+      <div class="text-muted" style="margin-top:8px">Mode: {{ traffic.sig_mode if traffic.sig_mode_enabled else 'off' }} · Auto-update: {{ 'on' if traffic.sig_autoupdate else 'off' }}</div>
+    </div>
+    <div>
+      <div class="card-title">Larger block lists</div>
+      <p class="text-muted">Raises the domain cap to 100000 and adds Spamhaus DROP addresses. Needs URL categories.</p>
+      <button class="btn btn-success" onclick="setLists(true, true)">Download and enable</button>
+      <button class="btn btn-secondary" onclick="setLists(false, false)">Disable</button>
+      <div class="text-muted" style="margin-top:8px">Status: {{ 'on' if traffic.lists_extended else 'off' }} · Domains {{ traffic.lists_domains }} · IPs {{ traffic.lists_ips }} · {{ traffic.lists_updated or 'not updated' }}</div>
+    </div>
+    <div>
+      <div class="card-title">Traffic picture and protocols</div>
+      <p class="text-muted">Graphs per interface and top talkers. Protocol identification uses Suricata’s application layer and only alerts.</p>
+      <button class="btn btn-success" onclick="setStats(true)">Enable graphs</button>
+      <button class="btn btn-secondary" onclick="setStats(false)">Disable graphs</button>
+      <button class="btn btn-success" onclick="setFlag('/api/traffic/protoid', true)">Enable protocols</button>
+      <button class="btn btn-secondary" onclick="setFlag('/api/traffic/protoid', false)">Disable protocols</button>
+      <pre id="traffic-picture" class="text-muted" style="margin-top:8px;white-space:pre-wrap">Graphs: {{ 'on' if traffic.stats_enabled else 'off' }} · Protocols: {{ 'on' if traffic.protoid_enabled else 'off' }}</pre>
+      <button class="btn btn-secondary btn-sm" onclick="loadPicture()">Refresh picture</button>
+    </div>
+  </div>
+</div>
+
 <div class="grid grid-2" style="margin-bottom:16px">
   <div class="card">
     <div class="card-header">
@@ -149,6 +197,52 @@
 </div>
 
 <script>
+async function setScope(enabled) {
+  try {
+    const data = await POST('/api/traffic/scope', {enabled, ifaces: document.getElementById('scope-ifaces').value});
+    toast(data.message || 'Saved', data.status === 'ok' ? 'success' : 'error');
+    if (data.status === 'ok') setTimeout(() => location.reload(), 600);
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function setSigMode(enabled) {
+  try {
+    const data = await POST('/api/traffic/sig-mode', {enabled, mode: document.getElementById('sig-mode').value});
+    toast(data.message || 'Saved', data.status === 'ok' ? 'success' : 'error');
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function disableSid() {
+  try {
+    await POST('/api/traffic/sig-override', {sid: document.getElementById('sig-sid').value, mode: 'disable'});
+    toast('Sid saved', 'success');
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function setSigAuto(enabled) {
+  try {
+    const data = await POST('/api/traffic/sig-autoupdate', {enabled});
+    toast(data.message || 'Saved', 'success');
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function setLists(enabled, autoupdate) {
+  try {
+    const data = await POST('/api/traffic/lists', {enabled, autoupdate});
+    toast(data.message || 'Saved', data.status === 'ok' ? 'success' : 'error');
+    if (data.status === 'ok') setTimeout(() => location.reload(), 600);
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function setStats(enabled) {
+  try {
+    const data = await POST('/api/traffic/stats', {enabled});
+    toast(data.message || 'Saved', 'success');
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function loadPicture() {
+  try {
+    const data = await GET('/api/traffic/picture');
+    const lines = (data.talkers || []).map(row => row.ip + ' ' + row.count);
+    document.getElementById('traffic-picture').textContent =
+      'Samples ' + (data.samples || []).length + '\n' + (lines.join('\n') || 'No talkers yet.');
+  } catch (err) { toast(err.message, 'error'); }
+}
 async function setFlag(url, enabled) {
   try {
     const data = await POST(url, {enabled});

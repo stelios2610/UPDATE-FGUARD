@@ -4,6 +4,31 @@
 {% set active = "firewall" %}
 
 {% block content %}
+<div class="card" style="margin-bottom:16px">
+  <div class="card-header">
+    <div>
+      <div class="card-title">Groups, schedules, VLAN-to-VLAN</div>
+      <div class="card-sub">Off until you enable it. A rule can use @GroupName, a weekly schedule, and an input and output interface.</div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-success btn-sm" onclick="setGroups(true)">Enable</button>
+      <button class="btn btn-secondary btn-sm" onclick="setGroups(false)">Disable</button>
+      <button class="btn btn-secondary btn-sm" onclick="setHits(true)">Count hits</button>
+      <button class="btn btn-secondary btn-sm" onclick="setHits(false)">Stop counts</button>
+    </div>
+  </div>
+  <div class="text-muted">Groups: {{ 'on' if groups_enabled else 'off' }} · Hit counters: {{ 'on' if hits_enabled else 'off' }}</div>
+  <div class="form-row" style="margin-top:12px">
+    <input class="form-control" id="alias-name" placeholder="Group name">
+    <select class="form-control" id="alias-kind"><option value="address">address</option><option value="port">port</option></select>
+    <input class="form-control" id="alias-value" placeholder="10.1.0.0/24, 10.2.0.0/24">
+    <button class="btn btn-primary" onclick="addAlias()">Add group</button>
+  </div>
+  <div class="text-muted" style="margin-top:8px">
+    {% for alias in aliases %}{{ alias.name }} ({{ alias.kind }}): {{ alias.value }} <button class="btn btn-danger btn-sm" onclick="deleteAlias({{ alias.id }})">✕</button>{% else %}No groups yet.{% endfor %}
+  </div>
+</div>
+
 <div class="card">
   <div class="card-header">
     <div>
@@ -132,6 +157,20 @@
           <input class="form-control" id="rule-remote-port" placeholder="e.g. 443">
         </div>
       </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Schedule</label>
+          <input class="form-control" id="rule-schedule" placeholder="mon,tue,wed,thu,fri 09:00-17:00">
+        </div>
+        <div class="form-group">
+          <label class="form-label">From interface</label>
+          <input class="form-control" id="rule-in-iface" placeholder="eth1">
+        </div>
+        <div class="form-group">
+          <label class="form-label">To interface</label>
+          <input class="form-control" id="rule-out-iface" placeholder="eth2">
+        </div>
+      </div>
       <div class="form-group">
         <label class="form-label">Description</label>
         <input class="form-control" id="rule-desc" placeholder="Optional">
@@ -165,11 +204,14 @@ function ruleData() {
     priority: parseInt(document.getElementById('rule-priority').value) || 100,
     enabled: document.getElementById('rule-enabled').checked ? 1 : 0,
     description: document.getElementById('rule-desc').value.trim(),
+    schedule: document.getElementById('rule-schedule').value.trim(),
+    in_iface: document.getElementById('rule-in-iface').value.trim(),
+    out_iface: document.getElementById('rule-out-iface').value.trim(),
   };
 }
 
 function clearRuleForm() {
-  ['rule-id','rule-name','rule-local-ip','rule-remote-ip','rule-local-port','rule-remote-port','rule-desc'].forEach(id => {
+  ['rule-id','rule-name','rule-local-ip','rule-remote-ip','rule-local-port','rule-remote-port','rule-desc','rule-schedule','rule-in-iface','rule-out-iface'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
@@ -194,6 +236,9 @@ function editRule(r) {
   document.getElementById('rule-priority').value = r.priority;
   document.getElementById('rule-enabled').checked = !!r.enabled;
   document.getElementById('rule-desc').value = r.description || '';
+  document.getElementById('rule-schedule').value = r.schedule || '';
+  document.getElementById('rule-in-iface').value = r.in_iface || '';
+  document.getElementById('rule-out-iface').value = r.out_iface || '';
   document.getElementById('modal-rule-title').textContent = 'Edit Firewall Rule';
   openModal('add-rule-modal');
 }
@@ -229,6 +274,31 @@ async function toggleRule(id, enabled) {
   } catch (e) { toast('Error: ' + e.message, 'error'); }
 }
 
+async function setGroups(enabled) {
+  try {
+    const data = await POST('/api/rules/groups', {enabled});
+    toast(data.message || 'Saved', 'success');
+    setTimeout(() => location.reload(), 400);
+  } catch (e) { toast(e.message, 'error'); }
+}
+async function setHits(enabled) {
+  try { await POST('/api/rules/hits', {enabled}); location.reload(); }
+  catch (e) { toast(e.message, 'error'); }
+}
+async function addAlias() {
+  try {
+    await POST('/api/aliases', {
+      name: document.getElementById('alias-name').value.trim(),
+      kind: document.getElementById('alias-kind').value,
+      value: document.getElementById('alias-value').value.trim(),
+    });
+    location.reload();
+  } catch (e) { toast(e.message, 'error'); }
+}
+async function deleteAlias(id) {
+  try { await DELETE('/api/aliases/' + id); location.reload(); }
+  catch (e) { toast(e.message, 'error'); }
+}
 async function syncRules() {
   try {
     const r = await POST('/api/rules/sync');

@@ -54,6 +54,17 @@ ha_manager.start_sync()
 
 # Ensure FGUARD iptables chains exist at startup with safe base rules
 from core.platform import IS_LINUX as _IS_LINUX
+try:
+    from core.parity import import_policy_on_backup
+    if import_policy_on_backup() and _IS_LINUX:
+        rules_engine.sync_all_rules()
+except Exception:
+    pass
+try:
+    from core import traffic_security as _traffic_jobs
+    _traffic_jobs.start_optional_jobs()
+except Exception:
+    pass
 if _IS_LINUX:
     try:
         rules_engine._ensure_chains()
@@ -459,7 +470,10 @@ async def dashboard(request: Request):
 @app.get("/firewall", response_class=HTMLResponse)
 async def firewall_page(request: Request):
     rules = database.get_rules()
-    return _ctx(request, template="firewall.html", rules=rules)
+    return _ctx(request, template="firewall.html", rules=rules,
+                aliases=database.list_aliases(),
+                groups_enabled=database.get_setting("rules_groups_enabled", "0") == "1",
+                hits_enabled=database.get_setting("rules_hits_enabled", "0") == "1")
 
 @app.get("/appcontrol", response_class=HTMLResponse)
 async def appcontrol_page(request: Request):
@@ -591,7 +605,8 @@ async def certs_page(request: Request):
 @app.get("/ha", response_class=HTMLResponse)
 async def ha_page(request: Request):
     return _ctx(request, template="ha.html",
-                ha=database.get_ha_config())
+                ha=database.get_ha_config(),
+                full_policy=database.get_setting("ha_full_policy", "0") == "1")
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request, tab: Optional[str] = None):
@@ -680,6 +695,7 @@ class RuleCreate(BaseModel):
     local_ip: str = ""; remote_ip: str = ""; local_port: str = ""
     remote_port: str = ""; enabled: int = 1; priority: int = 100
     description: str = ""; interface: str = ""; log_match: int = 0
+    schedule: str = ""; in_iface: str = ""; out_iface: str = ""
 
 @app.get("/api/rules")
 async def api_get_rules():
@@ -723,6 +739,63 @@ async def api_toggle_rule(rule_id: int):
 async def api_sync_rules():
     r = rules_engine.sync_all_rules()
     return {"synced": sum(1 for _,ok,_ in r if ok), "total": len(r)}
+
+
+@app.post("/api/rules/groups")
+async def api_rule_groups(request: Request):
+    data = await request.json()
+    enabled = "1" if data.get("enabled") else "0"
+    database.set_setting("rules_groups_enabled", enabled)
+    rules_engine.sync_all_rules()
+    return {"status": "ok", "message": "Address groups, schedules, and VLAN rules %s" % ("on" if enabled == "1" else "off")}
+
+
+@app.post("/api/rules/hits")
+async def api_rule_hits_switch(request: Request):
+    data = await request.json()
+    database.set_setting("rules_hits_enabled", "1" if data.get("enabled") else "0")
+    return {"status": "ok"}
+
+
+@app.get("/api/rules/hits")
+async def api_rule_hits():
+    from core.parity import hits_enabled, parse_rule_hits
+    from core.platform import run
+    if not hits_enabled():
+        return {"enabled": False, "hits": {}}
+    ok, out, _ = run(["iptables", "-L", "-v", "-n", "-x"])
+    return {"enabled": True, "hits": parse_rule_hits(out if ok else "")}
+
+
+@app.get("/api/aliases")
+async def api_aliases():
+    return database.list_aliases()
+
+
+@app.post("/api/aliases")
+async def api_add_alias(request: Request):
+    import re
+    data = await request.json()
+    name = (data.get("name") or "").strip()
+    kind = (data.get("kind") or "").strip()
+    value = (data.get("value") or "").strip()
+    if not re.match(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$", name):
+        raise HTTPException(400, "Group name must start with a letter")
+    if kind not in ("address", "port"):
+        raise HTTPException(400, "Group type must be address or port")
+    if not value or len(value) > 2000:
+        raise HTTPException(400, "Group value is empty or too long")
+    try:
+        database.add_alias(name, kind, value)
+    except Exception as exc:
+        raise HTTPException(400, "Group name already exists") from exc
+    return {"status": "ok"}
+
+
+@app.delete("/api/aliases/{alias_id}")
+async def api_delete_alias(alias_id: int):
+    database.delete_alias(alias_id)
+    return {"status": "ok"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1520,6 +1593,140 @@ async def api_traffic_ca():
     if not os.path.isfile(path):
         raise HTTPException(404, "The CA is created when HTTPS inspection is enabled")
     return FileResponse(path, filename="fguard-ca.crt", media_type="application/x-x509-ca-cert")
+
+
+def _reapply_ips_if_on():
+    from core import traffic_security
+    if database.get_setting("traffic_ips_enabled", "0") != "1":
+        return
+    wan, lans, ifaces = _traffic_planes()
+    traffic_security.apply_ips(True, [], ifaces, wan, lans)
+
+
+@app.post("/api/traffic/scope")
+async def api_traffic_scope(request: Request):
+    _require_license("Inspection interfaces")
+    data = await request.json()
+    enabled = "1" if data.get("enabled") else "0"
+    ifaces = ",".join(part.strip() for part in (data.get("ifaces") or "").split(",") if part.strip())
+    if enabled == "1" and not ifaces:
+        return {"status": "error", "message": "Name the interfaces to inspect"}
+    database.set_setting("traffic_ips_ifaces", ifaces)
+    database.set_setting("traffic_ips_scope_enabled", enabled)
+    _reapply_ips_if_on()
+    return {"status": "ok", "message": "Inspection interfaces %s" % ("on" if enabled == "1" else "off")}
+
+
+@app.post("/api/traffic/sig-mode")
+async def api_traffic_sig_mode(request: Request):
+    _require_license("Signature mode")
+    from core import traffic_security
+    data = await request.json()
+    enabled = "1" if data.get("enabled") else "0"
+    mode = (data.get("mode") or "drop").strip().lower()
+    if mode not in ("alert", "drop"):
+        return {"status": "error", "message": "Mode must be alert or drop"}
+    database.set_setting("traffic_sig_mode", mode)
+    database.set_setting("traffic_sig_mode_enabled", enabled)
+    if enabled == "1" and database.get_setting("traffic_signatures_enabled", "0") == "1":
+        try:
+            traffic_security.download_signatures()
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+        _reapply_ips_if_on()
+    return {"status": "ok", "message": "Signature mode %s" % (mode if enabled == "1" else "off")}
+
+
+@app.post("/api/traffic/sig-override")
+async def api_traffic_sig_override(request: Request):
+    data = await request.json()
+    try:
+        sid = int(data.get("sid"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "sid must be a number")
+    mode = (data.get("mode") or "").strip().lower()
+    if mode not in ("disable", "alert", ""):
+        raise HTTPException(400, "mode must be disable, alert, or empty")
+    database.set_signature_override(sid, mode)
+    return {"status": "ok"}
+
+
+@app.post("/api/traffic/sig-autoupdate")
+async def api_traffic_sig_autoupdate(request: Request):
+    data = await request.json()
+    database.set_setting("traffic_sig_autoupdate", "1" if data.get("enabled") else "0")
+    return {"status": "ok", "message": "Signature auto-update %s" % ("on" if data.get("enabled") else "off")}
+
+
+@app.post("/api/traffic/lists")
+async def api_traffic_lists(request: Request):
+    _require_license("Block lists")
+    from core import traffic_security
+    data = await request.json()
+    enabled = "1" if data.get("enabled") else "0"
+    database.set_setting("traffic_lists_extended", enabled)
+    database.set_setting("traffic_lists_autoupdate", "1" if data.get("autoupdate") else "0")
+    if enabled != "1":
+        traffic_security.remove_ip_blocklist()
+        return {"status": "ok", "message": "Extended block lists off"}
+    if database.get_setting("traffic_categories_enabled", "0") != "1":
+        return {"status": "ok", "message": "Extended lists armed. Download URL categories to fill them."}
+    domains, errors = traffic_security.update_category_feeds()
+    networks, ip_errors = traffic_security.update_ip_feeds()
+    message = "Extended lists on"
+    if domains:
+        ok, msg = traffic_security.apply_categories(domains)
+        if not ok:
+            return {"status": "error", "message": msg}
+        database.set_setting("traffic_lists_domains", str(len(domains)))
+        message = msg
+    if networks:
+        ok, msg = traffic_security.apply_ip_blocklist(networks)
+        if not ok:
+            return {"status": "error", "message": msg}
+        database.set_setting("traffic_lists_ips", str(len(networks)))
+    database.set_setting("traffic_lists_updated", __import__("datetime").datetime.now().isoformat())
+    return {"status": "ok", "message": message, "errors": errors + ip_errors}
+
+
+@app.post("/api/traffic/stats")
+async def api_traffic_stats_switch(request: Request):
+    data = await request.json()
+    database.set_setting("traffic_stats_enabled", "1" if data.get("enabled") else "0")
+    return {"status": "ok", "message": "Traffic graphs %s" % ("on" if data.get("enabled") else "off")}
+
+
+@app.get("/api/traffic/picture")
+async def api_traffic_picture():
+    from core.parity import hits_enabled, parse_rule_hits, top_talkers
+    from core.platform import run
+    samples = database.recent_traffic_samples() if database.get_setting("traffic_stats_enabled", "0") == "1" else []
+    talkers = top_talkers(database.get_logs(limit=500))
+    hits = {}
+    if hits_enabled():
+        ok, out, _ = run(["iptables", "-L", "-v", "-n", "-x"])
+        hits = parse_rule_hits(out if ok else "")
+    return {"samples": samples, "talkers": talkers, "hits": hits}
+
+
+@app.post("/api/traffic/protoid")
+async def api_traffic_protoid(request: Request):
+    _require_license("Protocol identification")
+    from core import traffic_security
+    data = await request.json()
+    enabled = bool(data.get("enabled"))
+    if enabled:
+        traffic_security.write_proto_rules()
+    database.set_setting("traffic_protoid_enabled", "1" if enabled else "0")
+    _reapply_ips_if_on()
+    return {"status": "ok", "message": "Protocol identification %s" % ("on" if enabled else "off")}
+
+
+@app.post("/api/ha/full-policy")
+async def api_ha_full_policy(request: Request):
+    data = await request.json()
+    database.set_setting("ha_full_policy", "1" if data.get("enabled") else "0")
+    return {"status": "ok", "message": "Full policy sync %s" % ("on" if data.get("enabled") else "off")}
 
 
 @app.post("/api/traffic/measure")

@@ -36,10 +36,13 @@
         </div>
       </div>
     </div>
+    <p class="text-muted">Full policy sync is {{ 'on' if full_policy else 'off' }}. When it is on, the backup keeps its own role and password and receives the rules, NAT, and groups. Open connections still move with conntrackd. Pull the cable to test failover.</p>
     <div class="btn-group">
       <button class="btn btn-success" onclick="applyHA()">Apply / Start</button>
       <button class="btn btn-danger" onclick="stopHA()">Stop</button>
       <button class="btn btn-secondary" onclick="syncNow()">Sync Config to Peer</button>
+      <button class="btn btn-secondary" onclick="setFullPolicy(true)">Full policy sync</button>
+      <button class="btn btn-secondary" onclick="setFullPolicy(false)">Files only</button>
     </div>
   </div>
 
@@ -243,6 +246,13 @@ async function stopHA() {
   setTimeout(refreshStatus, 1000);
 }
 
+async function setFullPolicy(enabled) {
+  try {
+    const data = await POST('/api/ha/full-policy', {enabled});
+    toast(data.message || 'Saved', 'success');
+    setTimeout(() => location.reload(), 400);
+  } catch (e) { toast(e.message, 'error'); }
+}
 async function syncNow() {
   toast('Syncing config to peer...', 'info');
   const r = await POST('/api/ha/sync');

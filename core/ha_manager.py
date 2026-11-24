@@ -375,17 +375,18 @@ def _do_sync(peer_ip):
     except ValueError as exc:
         return False, str(exc)
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    from core.parity import export_policy, full_policy_enabled, rsync_excludes
+    full_policy = full_policy_enabled()
+    if full_policy:
+        export_policy(base)
     if not base.endswith("/"):
         base += "/"
     remote = "root@%s:%s" % (peer_ip.strip(), base)
-    ok, _, err = run([
-        "rsync", "-az",
-        "--exclude=*.pyc", "--exclude=__pycache__",
-        "--exclude=build/iso-work", "--exclude=build/*.iso",
-        "-e", rsync_rsh(),
-        base,
-        remote,
-    ], timeout=60)
+    command = ["rsync", "-az"]
+    for name in rsync_excludes(full_policy):
+        command.append("--exclude=%s" % name)
+    command += ["-e", rsync_rsh(), base, remote]
+    ok, _, err = run(command, timeout=60)
 
     if ok:
         run(ssh_reload_command(peer_ip), timeout=10)

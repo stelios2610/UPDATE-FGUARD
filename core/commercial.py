@@ -116,10 +116,12 @@ def render_https_category_rules(domains, limit=8000):
     return "\n".join(lines)
 
 
-def rule_file_list(signatures=False, appid=False, https_categories=False):
+def rule_file_list(signatures=False, appid=False, https_categories=False, protocols=False):
     names = ["fguard-apps.rules"]
     if appid:
         names.append("fguard-appid.rules")
+    if protocols:
+        names.append("fguard-proto.rules")
     if https_categories:
         names.append("fguard-https-categories.rules")
     if signatures:

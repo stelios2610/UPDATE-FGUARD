@@ -596,6 +596,41 @@ def initialize():
     c.execute("INSERT OR IGNORE INTO ha_config (id, updated_at) VALUES (1, ?)",
               (datetime.now().isoformat(),))
 
+    for _col, _typedef in (
+        ("schedule", "TEXT DEFAULT ''"),
+        ("in_iface", "TEXT DEFAULT ''"),
+        ("out_iface", "TEXT DEFAULT ''"),
+    ):
+        try:
+            c.execute("ALTER TABLE rules ADD COLUMN %s %s" % (_col, _typedef))
+        except Exception:
+            pass
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS aliases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            kind TEXT NOT NULL CHECK(kind IN ('address','port')),
+            value TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS signature_overrides (
+            sid INTEGER PRIMARY KEY,
+            mode TEXT NOT NULL CHECK(mode IN ('disable','alert'))
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS traffic_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            iface TEXT NOT NULL,
+            rx_bps REAL NOT NULL,
+            tx_bps REAL NOT NULL
+        )
+    """)
+
     # ── DLP custom patterns ───────────────────────────────────────────────────
     c.execute("""
         CREATE TABLE IF NOT EXISTS dlp_patterns (
@@ -875,15 +910,16 @@ def get_rules():
 
 def add_rule(name, action, direction, protocol="ANY", local_ip="", remote_ip="",
              local_port="", remote_port="", enabled=1, priority=100, description="",
-             interface="", log_match=0):
+             interface="", log_match=0, schedule="", in_iface="", out_iface=""):
     conn = get_connection()
     conn.execute("""
         INSERT INTO rules (name, action, direction, protocol, local_ip, remote_ip,
-            local_port, remote_port, interface, log_match, enabled, priority, created_at, description)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            local_port, remote_port, interface, log_match, enabled, priority, created_at, description,
+            schedule, in_iface, out_iface)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (name, action, direction, protocol, local_ip, remote_ip,
           local_port, remote_port, interface, log_match, enabled, priority,
-          datetime.now().isoformat(), description))
+          datetime.now().isoformat(), description, schedule or "", in_iface or "", out_iface or ""))
     conn.commit()
     conn.close()
 
@@ -891,7 +927,7 @@ def add_rule(name, action, direction, protocol="ANY", local_ip="", remote_ip="",
 def update_rule(rule_id, **kwargs):
     allowed = {"name", "action", "direction", "protocol", "local_ip", "remote_ip",
                "local_port", "remote_port", "enabled", "priority", "description",
-               "interface", "log_match"}
+               "interface", "log_match", "schedule", "in_iface", "out_iface"}
     fields = {k: v for k, v in kwargs.items() if k in allowed}
     if not fields:
         return
@@ -906,6 +942,131 @@ def update_rule(rule_id, **kwargs):
 def delete_rule(rule_id):
     conn = get_connection()
     conn.execute("DELETE FROM rules WHERE id = ?", (rule_id,))
+    conn.commit()
+    conn.close()
+
+
+def list_aliases():
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM aliases ORDER BY name").fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def alias_map():
+    grouped = {}
+    for row in list_aliases():
+        values = [part.strip() for part in (row.get("value") or "").split(",") if part.strip()]
+        grouped[row["name"]] = {"kind": row["kind"], "values": values}
+    return grouped
+
+
+def add_alias(name, kind, value):
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO aliases (name, kind, value, created_at) VALUES (?, ?, ?, ?)",
+        (name, kind, value, datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_alias(alias_id):
+    conn = get_connection()
+    conn.execute("DELETE FROM aliases WHERE id = ?", (alias_id,))
+    conn.commit()
+    conn.close()
+
+
+def list_signature_overrides():
+    conn = get_connection()
+    rows = conn.execute("SELECT sid, mode FROM signature_overrides ORDER BY sid").fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def set_signature_override(sid, mode):
+    conn = get_connection()
+    if mode in ("disable", "alert"):
+        conn.execute(
+            "INSERT INTO signature_overrides (sid, mode) VALUES (?, ?) "
+            "ON CONFLICT(sid) DO UPDATE SET mode = excluded.mode",
+            (int(sid), mode),
+        )
+    else:
+        conn.execute("DELETE FROM signature_overrides WHERE sid = ?", (int(sid),))
+    conn.commit()
+    conn.close()
+
+
+def add_traffic_sample(iface, rx_bps, tx_bps):
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO traffic_samples (timestamp, iface, rx_bps, tx_bps) VALUES (?, ?, ?, ?)",
+        (datetime.now().isoformat(), iface, float(rx_bps), float(tx_bps)),
+    )
+    conn.execute(
+        "DELETE FROM traffic_samples WHERE id NOT IN (SELECT id FROM traffic_samples ORDER BY id DESC LIMIT 2000)"
+    )
+    conn.commit()
+    conn.close()
+
+
+def recent_traffic_samples(limit=240):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM traffic_samples ORDER BY id DESC LIMIT ?", (int(limit),)
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in reversed(rows)]
+
+
+def replace_synced_policy(document):
+    """Replace policy tables from the peer. Node role, password, and token stay."""
+    conn = get_connection()
+    conn.execute("DELETE FROM rules")
+    for rule in document.get("rules") or []:
+        conn.execute("""
+            INSERT INTO rules (id, name, action, direction, protocol, local_ip, remote_ip,
+                local_port, remote_port, interface, log_match, enabled, priority, created_at,
+                description, schedule, in_iface, out_iface)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            rule.get("id"), rule.get("name") or "rule", rule.get("action") or "BLOCK",
+            rule.get("direction") or "IN", rule.get("protocol") or "ANY",
+            rule.get("local_ip") or "", rule.get("remote_ip") or "",
+            rule.get("local_port") or "", rule.get("remote_port") or "",
+            rule.get("interface") or "", int(rule.get("log_match") or 0),
+            int(rule.get("enabled") if rule.get("enabled") is not None else 1),
+            int(rule.get("priority") or 100), rule.get("created_at") or datetime.now().isoformat(),
+            rule.get("description") or "", rule.get("schedule") or "",
+            rule.get("in_iface") or "", rule.get("out_iface") or "",
+        ))
+    conn.execute("DELETE FROM nat_rules")
+    for rule in document.get("nat_rules") or []:
+        conn.execute("""
+            INSERT INTO nat_rules (id, name, type, external_ip, external_port, internal_ip,
+                internal_port, protocol, interface, enabled, description, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            rule.get("id"), rule.get("name") or "nat", rule.get("type") or "DNAT",
+            rule.get("external_ip") or "", rule.get("external_port") or "",
+            rule.get("internal_ip") or "0.0.0.0", rule.get("internal_port") or "",
+            rule.get("protocol") or "TCP", rule.get("interface") or "",
+            int(rule.get("enabled") if rule.get("enabled") is not None else 1),
+            rule.get("description") or "", rule.get("created_at") or datetime.now().isoformat(),
+        ))
+    conn.execute("DELETE FROM aliases")
+    for alias in document.get("aliases") or []:
+        conn.execute(
+            "INSERT INTO aliases (id, name, kind, value, created_at) VALUES (?, ?, ?, ?, ?)",
+            (alias.get("id"), alias.get("name"), alias.get("kind"), alias.get("value") or "",
+             alias.get("created_at") or datetime.now().isoformat()),
+        )
+    for key, value in (document.get("settings") or {}).items():
+        if key in ("admin_password_hash", "fleet_token"):
+            continue
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
     conn.commit()
     conn.close()
 
