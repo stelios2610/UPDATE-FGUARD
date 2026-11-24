@@ -41,6 +41,9 @@
       <button class="btn btn-danger" onclick="setTls(true)">Download and enable</button>
       <button class="btn btn-secondary" onclick="setTls(false)">Disable</button>
       <div class="text-muted" style="margin-top:8px">Status: {{ 'on' if traffic.tls_enabled else 'off' }}</div>
+      <p class="text-muted" style="margin-top:12px">Excluded devices skip inspection and keep their own cloud connection. One IPv4 address per line, for example the living-room camera.</p>
+      <textarea class="form-control" id="tls-exclude" rows="4" placeholder="192.168.0.40">{{ traffic.tls_exclude }}</textarea>
+      <button class="btn btn-secondary" style="margin-top:8px" onclick="saveTlsExclude()">Save exclusions</button>
     </div>
   </div>
 </div>
@@ -278,6 +281,12 @@ async function setAv(enabled) {
     const data = await POST('/api/traffic/av', {enabled});
     toast(data.message || 'Saved', data.status === 'ok' ? 'success' : 'error');
     if (data.status === 'ok') setTimeout(() => location.reload(), 600);
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function saveTlsExclude() {
+  try {
+    const data = await POST('/api/traffic/tls-exclude', {addresses: document.getElementById('tls-exclude').value});
+    toast(data.message || 'Saved', data.status === 'ok' ? 'success' : 'error');
   } catch (err) { toast(err.message, 'error'); }
 }
 async function setTls(enabled) {

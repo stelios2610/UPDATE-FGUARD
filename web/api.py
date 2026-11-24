@@ -1506,6 +1506,23 @@ async def api_traffic_tls(request: Request):
     return {"status": "ok" if ok else "error", "message": msg}
 
 
+@app.post("/api/traffic/tls-exclude")
+async def api_traffic_tls_exclude(request: Request):
+    _require_license("HTTPS inspection")
+    from core import traffic_security
+    data = await request.json()
+    try:
+        addresses = traffic_security.parse_tls_exclusions(data.get("addresses") or "")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    database.set_setting("tls_inspect_exclude", "\n".join(addresses))
+    if database.get_setting("tls_inspect_enabled", "0") == "1":
+        lan = (database.get_setting("lan_interface", "") or "").split(",")[0].strip()
+        ok, msg = traffic_security.apply_tls_exclusions(lan, addresses)
+        return {"status": "ok" if ok else "error", "message": msg, "addresses": addresses}
+    return {"status": "ok", "message": "Saved %d exclusions" % len(addresses), "addresses": addresses}
+
+
 @app.post("/api/traffic/signatures")
 async def api_traffic_signatures(request: Request):
     _require_license("Threat signatures")

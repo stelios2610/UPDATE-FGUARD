@@ -4,6 +4,7 @@ Suricata inspects LAN-to-WAN traffic and fails open if it stops. Category
 lists are enforced in DNS. Download antivirus scans files Suricata extracts.
 HTTPS inspection stays off until an administrator confirms it.
 """
+import ipaddress
 import json
 import os
 import re
@@ -309,6 +310,55 @@ def tls_plan(enabled, confirmed):
     }
 
 
+def parse_tls_exclusions(text):
+    """IPv4 addresses and networks that skip HTTPS inspection. One per line."""
+    found = []
+    seen = set()
+    for raw in str(text or "").replace(",", "\n").splitlines():
+        item = raw.strip()
+        if not item or item.startswith("#"):
+            continue
+        try:
+            if "/" in item:
+                network = ipaddress.ip_network(item, strict=False)
+                if network.version != 4:
+                    raise ValueError
+                normalized = str(network)
+            else:
+                address = ipaddress.ip_address(item)
+                if address.version != 4:
+                    raise ValueError
+                normalized = str(address)
+        except ValueError:
+            raise ValueError("Use an IPv4 address, for example 192.168.0.40")
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        found.append(normalized)
+        if len(found) > 32:
+            raise ValueError("At most 32 excluded devices")
+    return found
+
+
+def tls_exclude_rules(lan_iface, addresses):
+    """Rules that let these sources keep their own HTTPS connection."""
+    lan = (lan_iface or "").strip()
+    nat_rules = []
+    filter_rules = []
+    if not lan:
+        return nat_rules, filter_rules
+    for address in addresses or []:
+        nat_rules.append([
+            "-i", lan, "-p", "tcp", "-s", address, "--dport", "443",
+            "-m", "comment", "--comment", "fguard_tls_exclude", "-j", "RETURN",
+        ])
+        filter_rules.append([
+            "-i", lan, "-p", "udp", "-s", address, "--dport", "443",
+            "-m", "comment", "--comment", "fguard_tls_exclude", "-j", "ACCEPT",
+        ])
+    return nat_rules, filter_rules
+
+
 def sslsplit_command(plan):
     command = [
         "sslsplit", "-D",
@@ -554,6 +604,32 @@ def _eve_loop():
         time.sleep(2)
 
 
+def _drop_comment_rules(table, comment, limit=128):
+    for _ in range(limit):
+        rules = _comment_rules(table, comment)
+        if not rules:
+            return
+        chain, args = rules[0]
+        if table == "filter":
+            run(["iptables", "-D", chain] + args)
+        else:
+            run(["iptables", "-t", table, "-D", chain] + args)
+
+
+def apply_tls_exclusions(lan_iface, addresses):
+    """Replace the device exceptions while HTTPS inspection is on."""
+    if not IS_LINUX or not is_root():
+        return False, "HTTPS inspection requires Linux root"
+    _drop_comment_rules("nat", "fguard_tls_exclude")
+    _drop_comment_rules("filter", "fguard_tls_exclude")
+    nat_rules, filter_rules = tls_exclude_rules(lan_iface, addresses)
+    for rule in nat_rules:
+        run(["iptables", "-t", "nat", "-I", "PREROUTING", "1"] + rule)
+    for rule in filter_rules:
+        run(["iptables", "-I", "FORWARD", "1"] + rule)
+    return True, "Excluded %d devices" % len(nat_rules)
+
+
 def _comment_rules(table, comment):
     ok, out, _ = run(["iptables", "-t", table, "-S"])
     if not ok:
@@ -611,6 +687,8 @@ def enable_tls(confirmed, lan_iface):
         check, _, _ = run(["iptables", "-C", "FORWARD"] + rule)
         if not check:
             run(["iptables", "-I", "FORWARD", "1"] + rule)
+    saved = database.get_setting("tls_inspect_exclude", "") or ""
+    apply_tls_exclusions(lan_iface, parse_tls_exclusions(saved))
     command = " ".join(sslsplit_command(plan))
     unit = (
         "[Unit]\nDescription=FGUARD HTTPS inspection\n\n"
@@ -629,19 +707,10 @@ def enable_tls(confirmed, lan_iface):
 
 def disable_tls():
     if IS_LINUX and is_root():
-        for comment in ("fguard_tls_bypass", "fguard_tls_inspect"):
-            for _ in range(32):
-                rules = _comment_rules("nat", comment)
-                if not rules:
-                    break
-                chain, args = rules[0]
-                run(["iptables", "-t", "nat", "-D", chain] + args)
-        for _ in range(32):
-            rules = _comment_rules("filter", "fguard_quic")
-            if not rules:
-                break
-            chain, args = rules[0]
-            run(["iptables", "-D", chain] + args)
+        for comment in ("fguard_tls_bypass", "fguard_tls_inspect", "fguard_tls_exclude"):
+            _drop_comment_rules("nat", comment)
+        _drop_comment_rules("filter", "fguard_quic")
+        _drop_comment_rules("filter", "fguard_tls_exclude")
         run(["systemctl", "disable", "--now", "fguard-tls"])
     return True, "HTTPS inspection stopped"
 
@@ -897,6 +966,7 @@ def status():
         "categories_enabled": database.get_setting("traffic_categories_enabled", "0") == "1",
         "av_enabled": database.get_setting("traffic_av_enabled", "0") == "1",
         "tls_enabled": database.get_setting("tls_inspect_enabled", "0") == "1",
+        "tls_exclude": database.get_setting("tls_inspect_exclude", "") or "",
         "signatures_enabled": database.get_setting("traffic_signatures_enabled", "0") == "1",
         "appid_enabled": database.get_setting("traffic_appid_enabled", "0") == "1",
         "https_categories_enabled": database.get_setting("traffic_https_categories_enabled", "0") == "1",
