@@ -620,6 +620,7 @@ def enable_tls(confirmed, lan_iface):
     with open("/etc/systemd/system/fguard-tls.service", "w", encoding="utf-8") as handle:
         handle.write(unit)
     run(["systemctl", "daemon-reload"])
+    run(["systemctl", "enable", "fguard-tls"])
     ok, _, err = run(["systemctl", "restart", "fguard-tls"], timeout=20)
     if not ok:
         return False, err or "sslsplit did not start"
@@ -641,7 +642,7 @@ def disable_tls():
                 break
             chain, args = rules[0]
             run(["iptables", "-D", chain] + args)
-        run(["systemctl", "stop", "fguard-tls"])
+        run(["systemctl", "disable", "--now", "fguard-tls"])
     return True, "HTTPS inspection stopped"
 
 
@@ -710,6 +711,7 @@ def update_category_feeds():
     return domains, errors
 
 
+IPSET_FILE = "/etc/fguard/block-ips.ipset"
 IP_FEEDS = (
     ("Spamhaus DROP", "https://www.spamhaus.org/drop/drop.txt"),
     ("Spamhaus EDROP", "https://www.spamhaus.org/drop/edrop.txt"),
@@ -738,9 +740,17 @@ def apply_ip_blocklist(networks):
         return False, "IP lists require Linux root"
     from core.parity import ipset_restore_lines
     os.makedirs("/etc/fguard", exist_ok=True)
-    path = "/etc/fguard/block-ips.ipset"
-    with open(path, "w", encoding="utf-8") as handle:
+    with open(IPSET_FILE, "w", encoding="utf-8") as handle:
         handle.write(ipset_restore_lines(networks))
+    return load_ipset_file(IPSET_FILE, len(networks))
+
+
+def load_ipset_file(path, count=None):
+    """Load a saved ipset and put the drop rule back. Used after reboot."""
+    if not IS_LINUX or not is_root():
+        return False, "IP lists require Linux root"
+    if not os.path.isfile(path):
+        return False, "No saved IP list"
     ok, _, err = run(["ipset", "restore", "-exist", "-file", path], timeout=60)
     if not ok:
         return False, err or "ipset restore failed"
@@ -751,7 +761,19 @@ def apply_ip_blocklist(networks):
     check, _, _ = run(["iptables", "-C", "FORWARD"] + rule)
     if not check:
         run(["iptables", "-I", "FORWARD", "1"] + rule)
-    return True, "%d networks installed" % len(networks)
+    if count is None:
+        return True, "IP list restored from disk"
+    return True, "%d networks installed" % count
+
+
+def restore_saved_ipset():
+    """Bring the Spamhaus list back immediately. Download only when the file is missing."""
+    if os.path.isfile(IPSET_FILE):
+        return load_ipset_file(IPSET_FILE)
+    networks, errors = update_ip_feeds()
+    if not networks:
+        return False, "; ".join(errors) or "No IP list downloaded"
+    return apply_ip_blocklist(networks)
 
 
 def remove_ip_blocklist():
@@ -834,17 +856,33 @@ def _optional_loop():
 
 
 def restore():
-    """Re-apply traffic IPS after boot only when an administrator already enabled it."""
+    """After boot, bring back inspection that an administrator already turned on."""
     from db import database
-    if database.get_setting("traffic_ips_enabled", "0") != "1":
-        return False, "Traffic IPS is off"
-    wan = database.get_setting("wan_interface", "") or ""
-    lan = database.get_setting("lan_interface", "") or ""
-    lans = [item.strip() for item in lan.split(",") if item.strip()]
-    ifaces = list(lans)
-    if wan and wan not in ifaces:
-        ifaces.append(wan)
-    return apply_ips(True, [], ifaces, wan, lans)
+    from core.parity import boot_restore_plan
+    plan = boot_restore_plan(database.get_all_settings())
+    done = []
+    if plan["ips"]:
+        wan = database.get_setting("wan_interface", "") or ""
+        lan = database.get_setting("lan_interface", "") or ""
+        lans = [item.strip() for item in lan.split(",") if item.strip()]
+        ifaces = list(lans)
+        if wan and wan not in ifaces:
+            ifaces.append(wan)
+        ok, _msg = apply_ips(True, [], ifaces, wan, lans)
+        done.append("ips" if ok else "ips-failed")
+    if plan["tls"]:
+        lan = (database.get_setting("lan_interface", "") or "").split(",")[0].strip()
+        try:
+            ok, _msg = enable_tls(True, lan)
+        except ValueError:
+            ok = False
+        done.append("tls" if ok else "tls-failed")
+    if plan["ipset"]:
+        ok, _msg = restore_saved_ipset()
+        done.append("ipset" if ok else "ipset-failed")
+    if not any(item in done for item in ("ips", "tls", "ipset")):
+        return False, "Traffic inspection is off"
+    return True, " ".join(done)
 
 
 def status():

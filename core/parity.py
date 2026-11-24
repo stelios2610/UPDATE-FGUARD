@@ -80,6 +80,20 @@ def lists_extended():
     return _flag("traffic_lists_extended")
 
 
+def boot_restore_plan(settings):
+    """What comes back after reboot. Only switches that are already on."""
+    settings = settings or {}
+
+    def on(key):
+        return str(settings.get(key, "0")) == "1"
+
+    return {
+        "ips": on("traffic_ips_enabled"),
+        "tls": on("tls_inspect_enabled") and on("tls_inspect_confirmed"),
+        "ipset": on("traffic_lists_extended"),
+    }
+
+
 def protoid_enabled():
     return _flag("traffic_protoid_enabled")
 

@@ -7,10 +7,11 @@
     "Measured throughput, HA session sync when conntrackd is installed, and a read-only view of other firewalls.",
     "Traffic Security downloads Suricata, ClamAV, and sslsplit when you press Download and enable.",
     "Optional threat signatures, application identification, HTTPS categories, decrypted antivirus, safer HTTPS bypasses, and policy push. All stay off until enabled.",
-    "Optional address groups, rule schedules, VLAN-to-VLAN rules, hit counters, full HA policy sync, Suricata interface choice, signature alert or drop, larger block lists, traffic graphs, and protocol identification. All stay off until enabled."
+    "Optional address groups, rule schedules, VLAN-to-VLAN rules, hit counters, full HA policy sync, Suricata interface choice, signature alert or drop, larger block lists, traffic graphs, and protocol identification. All stay off until enabled.",
+    "HTTPS inspection and the saved Spamhaus address list come back after a reboot when they were already enabled."
   ],
   "date": "2026-11-24",
-  "sha256": "56565e68e41b8e3cf5cc57df0463d0b889d100c4d0c3f03176377f5de786f166",
-  "url": "https://github.com/stelios2610/UPDATE-FGUARD/releases/download/v1.0.44/fguard-1.0.44.zip",
-  "version": "1.0.44"
+  "sha256": "0096f9b944d21b7c7cf59dcbabd6621b99219af1529b3f2d6dddb1d798188d5e",
+  "url": "https://github.com/stelios2610/UPDATE-FGUARD/releases/download/v1.0.45/fguard-1.0.45.zip",
+  "version": "1.0.45"
 }
